@@ -1,0 +1,318 @@
+"""从记忆库抽图——**只读**。
+
+这是一个适配器，不是库的一部分：核心（graph.py / nav.py / cli.py）不认识任何具体的记忆存储。
+所以要显式告诉它数据在哪：
+
+    python from_memory.py --mem-home ~/某个记忆库
+
+也可以设 OPENCODE_MEM_HOME。没有默认路径——通用的东西不该猜某台机器上的私有目录。
+
+数据源是 JSONL：stream.jsonl 是记录本体（顺序即 #NNNN 记录号），episodes/tools/marks/assoc
+只在拍指纹时用到。
+本文件只 open(..., "r")，不写、不改、不迁移源数据；输出默认落在 kgnav/data/ 里。
+真跑之前对源文件拍一遍 sha256，跑完再拍一遍，必须一模一样——见 verify_source()。
+
+抽三类东西：
+  link    文本里的 #NNNN 引用（谁提到了谁），以及 episode 自带的 id 列表
+  source  记录 → 同一轮任务的 episode（episode 就是那一轮的"来源"）
+节点去重：同内容只留一个（同一段回复可能被反复存成多份）；
+产物按文件路径合并成一个节点（同一文件写了 50 版，不该是 50 个节点）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+from bisect import bisect_right
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HERE = Path(__file__).parent
+DEFAULT_OUT = HERE / "data" / "mem_graph.json"
+
+REF = re.compile(r"#(\d+)")
+
+
+def _sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+
+def norm(text: str | None) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:  # 只读
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_source(mem: Path) -> dict[str, str]:
+    """给源文件拍指纹。跑之前拍一次，跑完再拍一次，必须一模一样。"""
+    out = {}
+    for name in ("stream.jsonl", "episodes.jsonl", "tools.jsonl", "marks.jsonl", "assoc.json"):
+        p = mem / name
+        out[name] = sha256_file(p) if p.exists() else "-"
+    return out
+
+
+def read_records(mem: Path) -> list[dict]:
+    recs = []
+    with (mem / "stream.jsonl").open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            r["n"] = len(recs) + 1  # 记录号：文件里的顺序就是 #NNNN
+            recs.append(r)
+    return recs
+
+
+def title_of(rec: dict) -> str:
+    text = norm(rec.get("text"))
+    episode = text.startswith("任务摘录")
+    text = re.sub(r"^任务摘录[：:]\s*", "", text)
+    text = re.sub(r"^[#>*\-\s]+", "", text)
+    text = text[:30] + ("…" if len(text) > 30 else "")
+    tag = "〔轮次〕" if episode else ""
+    return f"{tag}#{rec['n']} {text}"
+
+
+def short_path(p: str) -> str:
+    file = Path(p)
+    return "/".join([x for x in re.split(r"[\\/]+", str(file)) if x][-2:])
+
+
+def _window_ep(starts: list[tuple[int, str, int]] | None, n: int) -> tuple[str, int, int] | None:
+    """同一 sid 里，起点最晚且不晚于这条记录的 episode → (节点, 记录号, requestSeq)。"""
+    if not starts:
+        return None
+    i = bisect_right(starts, (n, "\uffff", 0)) - 1
+    return starts[i] if i >= 0 else None
+
+
+def _snippet(text: str, start: int, end: int, pad: int = 40) -> str:
+    a = max(0, start - pad)
+    b = min(len(text), end + pad)
+    return ("…" if a else "") + norm(text[a:b]) + ("…" if b < len(text) else "")
+
+
+def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
+    nodes: dict[str, dict] = {}
+    rec2node: dict[int, str] = {}
+
+    # 1) 产物按路径合并
+    path2node: dict[str, str] = {}
+    for r in recs:
+        if r.get("kind") == "artifact" and r.get("path"):
+            p = r["path"]
+            if p not in path2node:
+                nid = f"file{len(nodes) + 1}"
+                path2node[p] = nid
+                nodes[nid] = {"id": nid, "title": short_path(p), "text": p, "path": p, "count": 0}
+            nodes[path2node[p]]["count"] += 1
+            rec2node[r["n"]] = path2node[p]
+
+    # 2) 其余记录按内容去重
+    content2node: dict[str, str] = {}
+    ep_by_turn: dict[tuple, str] = {}  # 同一轮被总结了两次：并成一个节点，别当成两条笔记
+    for r in recs:
+        if r["n"] in rec2node:
+            continue
+        key = _sha1(norm(r.get("text")))
+        if r.get("kind") == "episode" and r.get("turnID"):
+            turn = (r.get("sid"), r.get("turnID"))
+            if turn in ep_by_turn:
+                rec2node[r["n"]] = ep_by_turn[turn]
+                nodes[ep_by_turn[turn]]["count"] += 1
+                continue
+        if key in content2node:
+            rec2node[r["n"]] = content2node[key]
+            nodes[content2node[key]]["count"] += 1
+            continue
+        nid = f"r{r['n']}"
+        content2node[key] = nid
+        rec2node[r["n"]] = nid
+        if r.get("kind") == "episode" and r.get("turnID"):
+            ep_by_turn[(r.get("sid"), r.get("turnID"))] = nid
+        nodes[nid] = {
+            "id": nid,
+            "title": title_of(r),
+            "text": norm(r.get("text"))[:600],
+            "kind": r.get("kind"),
+            "who": r.get("who"),
+            "first": r["n"],
+            "count": 1,
+        }
+
+    # 3) 边。每条边都带证据：哪条记录（#N）+ 那句原话，方便回 L0 核对。
+    edges: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(a: str, b: str, kind: str, n: int | None = None, quote: str = "") -> bool:
+        if a == b:
+            return False
+        k = (a, b, kind)
+        kr = (b, a, kind)
+        if k in seen or kr in seen:
+            return False
+        seen.add(k)
+        edges.append({"from": a, "to": b, "kind": kind, "n": n, "quote": quote})
+        return True
+
+    for r in recs:
+        src = rec2node[r["n"]]
+        text = r.get("text") or ""
+        for m in REF.finditer(text):
+            tgt = rec2node.get(int(m.group(1)))
+            if tgt is not None:
+                add(src, tgt, "link", r["n"], _snippet(text, m.start(), m.end()))
+
+    # 3b) episode 自己记着这轮的 sourceIDs / answerIDs / artifactIDs（UUID），
+    #     这些是真·精确引用，比正文里的 #N 更硬，而且能救回没有 turnID 的记录。
+    id2node = {r["id"]: rec2node[r["n"]] for r in recs if r.get("id") and r["n"] in rec2node}
+    id_edges = 0
+    for r in recs:
+        if r.get("kind") != "episode":
+            continue
+        src = rec2node[r["n"]]
+        for field in ("sourceIDs", "answerIDs", "artifactIDs"):
+            for u in r.get(field) or []:
+                if u in id2node and add(src, id2node[u], "link", r["n"], f"这一轮的 {field} 里列了它"):
+                    id_edges += 1
+
+    # 4) 同一轮的任务摘录当"来源"枢纽。
+    #    turnID 对不上时退一步：episode 自己记了 requestSeq（那一轮从哪条记录开始），
+    #    同一 sid 里取"起点早于它、且最晚的那条 episode"。这是照抄记录里的边界，不是猜。
+    turn2ep: dict[tuple, tuple[str, int, int | None]] = {}
+    win: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+    for r in recs:
+        if r.get("kind") == "episode":
+            ep = (rec2node[r["n"]], r["n"], None)
+            turn2ep[(r.get("sid"), r.get("turnID"))] = ep
+            if r.get("requestSeq"):
+                win[r.get("sid")].append((r["requestSeq"], ep[0], ep[1]))
+    for starts in win.values():
+        starts.sort()
+
+    exact = window = miss = 0
+    for r in recs:
+        hit = turn2ep.get((r.get("sid"), r.get("turnID")))
+        why = "同一轮：turnID 对得上"
+        if hit is not None:
+            exact += 1
+        elif use_window:
+            found = _window_ep(win.get(r.get("sid")), r["n"])
+            window += 1 if found else 0
+            if found:
+                seq, node, ep_n = found
+                hit, why = (node, ep_n, seq), f"同一轮：按它记的 requestSeq={seq} 归过来"
+        if hit is None:
+            miss += 1
+            continue
+        add(rec2node[r["n"]], hit[0], "source", hit[1], why)
+
+    graph = {
+        "_说明": "由 from_memory.py 从 ~/.opencode-mem/stream.jsonl 只读抽取。勿手改。",
+        "nodes": list(nodes.values()),
+        "links": edges,
+    }
+    stats = {
+        "records": len(recs),
+        "nodes": len(nodes),
+        "edges": Counter(e["kind"] for e in edges),
+        "id_references": id_edges,
+        "collapsed": sum(v["count"] - 1 for v in nodes.values()),
+        "exact": exact,
+        "window": window,
+        "no_episode": miss,
+        **health(nodes, edges),
+    }
+    return graph, stats
+
+
+def health(nodes: dict, edges: list[dict]) -> dict:
+    """孤岛数、最大连通块。孤岛是这张图唯一的硬伤，每次抽图都报一遍。"""
+    adj: dict[str, set[str]] = {i: set() for i in nodes}
+    for e in edges:
+        adj[e["from"]].add(e["to"])
+        adj[e["to"]].add(e["from"])
+    isolated = sum(1 for v in adj.values() if not v)
+    seen: set[str] = set()
+    biggest = 0
+    for i in adj:
+        if i in seen:
+            continue
+        stack, size = [i], 0
+        seen.add(i)
+        while stack:
+            u = stack.pop()
+            size += 1
+            for v in adj[u]:
+                if v not in seen:
+                    seen.add(v)
+                    stack.append(v)
+        biggest = max(biggest, size)
+    return {"isolated": isolated, "biggest": biggest}
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="从记忆库 JSONL 抽一张图（只读源数据）")
+    ap.add_argument(
+        "--mem-home",
+        default=os.environ.get("OPENCODE_MEM_HOME"),
+        help="记忆库目录，里面要有 stream.jsonl；也可用 OPENCODE_MEM_HOME",
+    )
+    ap.add_argument("-o", "--out", default=str(DEFAULT_OUT), help="输出图 JSON")
+    ap.add_argument("--no-window", action="store_true", help="只认严格 turnID，不用 requestSeq 时间窗回填")
+    a = ap.parse_args(argv)
+
+    if not a.mem_home:
+        print("没有指定记忆库位置。用法：python from_memory.py --mem-home <目录>")
+        print("（或设 OPENCODE_MEM_HOME。这里故意不给默认路径——通用工具不该猜私有目录。）")
+        return 2
+    mem = Path(a.mem_home).expanduser()
+    if not (mem / "stream.jsonl").exists():
+        print(f"{mem} 下面没有 stream.jsonl，读不了。")
+        return 2
+    out = Path(a.out).expanduser()
+
+    before = verify_source(mem)
+    recs = read_records(mem)
+    graph, stats = build(recs, use_window=not a.no_window)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(graph, ensure_ascii=False, indent=1), encoding="utf-8")
+    after = verify_source(mem)
+
+    print(f"源：{mem}")
+    print(f"记录 {stats['records']} → 节点 {stats['nodes']}（合并掉 {stats['collapsed']} 份重复/多版本）")
+    print("边：" + "、".join(f"{k} {v}" for k, v in stats["edges"].items()))
+    print(
+        f"归属：turnID 对上 {stats['exact']}"
+        f"、seq 窗口补 {stats['window']}"
+        f"、仍无归属 {stats['no_episode']}"
+        f"；episode 的 id 列表另抽出 {stats['id_references']} 条精确引用"
+    )
+    print(
+        f"健康：孤岛 {stats['isolated']}/{stats['nodes']}"
+        f"（{stats['isolated'] / stats['nodes']:.0%}），最大连通块 {stats['biggest']}"
+    )
+    same = before == after
+    print("源文件指纹：" + ("跑前跑后一致，未改动" if same else "**变了，停手**"))
+    if not same:
+        for k in before:
+            if before[k] != after[k]:
+                print(f"  {k}: {before[k][:12]} → {after[k][:12]}")
+        return 1
+    print(f"输出：{out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

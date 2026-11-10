@@ -1,0 +1,36 @@
+{
+  "_说明": "Day 1 假图。只手写节点和显式链接；同来源 / 同标签两类边由节点元数据派生，语义近邻边在这里手写几条当脏边样本。",
+  "nodes": [
+    { "id": "memory-lossy",  "title": "有损压缩记忆",       "tags": ["记忆"],       "source": "记忆方案-A" },
+    { "id": "summary-index", "title": "摘要即索引",         "tags": ["记忆"],       "source": "记忆方案-A" },
+    { "id": "l0-original",   "title": "L0 原话层",          "tags": ["记忆", "真相"], "source": "记忆方案-A" },
+    { "id": "write-nomodel", "title": "写入不经模型",       "tags": ["记忆"],       "source": "记忆方案-B" },
+
+    { "id": "kg-nav",        "title": "知识图导航",         "tags": ["导航", "图"],  "source": "导航笔记-C" },
+    { "id": "path-note",     "title": "路径解释模板",       "tags": ["导航", "解释"], "source": "导航笔记-C" },
+    { "id": "confidence",    "title": "置信度",             "tags": ["导航", "校准"], "source": "导航笔记-C" },
+    { "id": "semantic-edge", "title": "语义近邻边",         "tags": ["导航", "脏边"], "source": "导航笔记-C" },
+    { "id": "cooccur-edge",  "title": "共现边埋点",         "tags": ["导航", "埋点"], "source": "导航笔记-D" },
+
+    { "id": "robot-nav",     "title": "机器人定位导航",     "tags": ["机器人", "导航"], "source": "机器人笔记-E" },
+    { "id": "graph-vs-est",  "title": "图搜索与状态估计的区别", "tags": ["方法", "边界"], "source": "机器人笔记-E" },
+    { "id": "amortize",      "title": "抽象成本靠复用摊销", "tags": ["方法", "边界"], "source": "方法笔记-F" }
+  ],
+  "links": [
+    { "from": "memory-lossy",  "to": "summary-index", "kind": "link" },
+    { "from": "summary-index", "to": "l0-original",   "kind": "link" },
+    { "from": "path-note",     "to": "l0-original",   "kind": "link" },
+
+    { "from": "kg-nav",        "to": "path-note",     "kind": "link" },
+    { "from": "path-note",     "to": "confidence",    "kind": "link" },
+    { "from": "confidence",    "to": "semantic-edge", "kind": "link" },
+    { "from": "cooccur-edge",  "to": "confidence",    "kind": "link" },
+
+    { "from": "kg-nav",        "to": "graph-vs-est",  "kind": "link" },
+    { "from": "robot-nav",     "to": "graph-vs-est",  "kind": "link" },
+    { "from": "graph-vs-est",  "to": "amortize",      "kind": "link" },
+
+    { "from": "memory-lossy",  "to": "semantic-edge", "kind": "semantic" },
+    { "from": "write-nomodel", "to": "kg-nav",        "kind": "semantic" }
+  ]
+}

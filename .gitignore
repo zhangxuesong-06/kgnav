@@ -1,0 +1,17 @@
+# Python 生成物
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 从本机记忆库抽出来的图：含个人记忆原文和本机绝对路径，只在本机生成，不入库
+data/mem_graph.json
+
+# 临时输出
+*.log
+out.txt
+probe.txt
+
+# Windows 资源管理器 / macOS 留下的
+Thumbs.db
+.DS_Store
