@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,30 @@ class Graph:
 
     def why_of(self, a: str, b: str) -> tuple[int | None, str, str, tuple[str, str]]:
         return self.why.get((a, b) if a <= b else (b, a), (None, "", "", ("", "")))
+
+    def resolve(self, name: str) -> tuple[str | None, list[str]]:
+        """精确 id → #记录号 → 精确标题 → 唯一子串 → 二字组近似。命中多个就原样返回，不猜。"""
+        if name in self.titles:
+            return name, []
+        n = re.fullmatch(r"#(\d+)", name.strip())
+        if n and f"r{n.group(1)}" in self.titles:
+            return f"r{n.group(1)}", []
+        if name in set(self.titles.values()):
+            return next(k for k, v in self.titles.items() if v == name), []
+        hits = [k for k, v in self.texts.items() if name in v]
+        if not hits:
+            hits = self._fuzzy(name)
+        return (hits[0], hits) if len(hits) == 1 else (None, hits)
+
+    def _fuzzy(self, name: str, limit: int = 5) -> list[str]:
+        q = {name[i : i + 2] for i in range(len(name) - 1)}
+        scored = [
+            (len(q & {t[i : i + 2] for i in range(len(t) - 1)}), k)
+            for k, t in self.texts.items()
+        ]
+        scored = [x for x in scored if x[0] > 0]
+        scored.sort(reverse=True)
+        return [k for _, k in scored[:limit]]
 
 
 def _derived_edges(nodes: list[dict]) -> list[Edge]:

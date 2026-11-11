@@ -11,10 +11,10 @@ import sys
 from pathlib import Path
 
 from graph import CN, EDGE_KINDS, Graph, load
-from nav import Navigator, dead_end
+from nav import Bidirectional, Navigator, dead_end
 
 HERE = Path(__file__).parent
-NAVIGATORS = {"dijkstra": Navigator}  # 加算法时只往这里加一项
+NAVIGATORS = {"dijkstra": Navigator, "bidirectional": Bidirectional}  # 加算法时只往这里加一项
 NAVIGATOR = "dijkstra"  # ← 换算法只改这一个字符串
 
 
@@ -77,8 +77,8 @@ def main() -> int:
 
     kinds = tuple(k for k in EDGE_KINDS if not (a.no_semantic and k == "semantic"))
     g = load(HERE / "data" / a.graph)
-    src, hit_s = _resolve(g, a.src)
-    dst, hit_d = _resolve(g, a.dst)
+    src, hit_s = g.resolve(a.src)
+    dst, hit_d = g.resolve(a.dst)
     if not src or not dst:
         _complain(g, a.src if not src else a.dst, hit_s if not src else hit_d)
         return 2
@@ -86,26 +86,6 @@ def main() -> int:
         print(f"同一个节点：《{g.title(src)}》，用不着找路。")
         return 0
     return run(g, src, dst, kinds, a.k, a.why)
-
-
-def _resolve(g: Graph, name: str) -> tuple[str | None, list[str]]:
-    """精确 id → 精确标题 → 唯一子串 → 二字组近似。命中多个就列出来，不猜。"""
-    if name in g.titles:
-        return name, []
-    if name in set(g.titles.values()):
-        return next(k for k, v in g.titles.items() if v == name), []
-    hits = [k for k, v in g.texts.items() if name in v]
-    if not hits:
-        hits = _fuzzy(g, name)
-    return (hits[0], hits) if len(hits) == 1 else (None, hits)
-
-
-def _fuzzy(g: Graph, name: str, limit: int = 5) -> list[str]:
-    q = {name[i : i + 2] for i in range(len(name) - 1)}
-    scored = [(len(q & {t[i : i + 2] for i in range(len(t) - 1)}), k) for k, t in g.texts.items()]
-    scored = [x for x in scored if x[0] > 0]
-    scored.sort(reverse=True)
-    return [k for _, k in scored[:limit]]
 
 
 def _complain(g: Graph, name: str, hits: list[str]) -> None:

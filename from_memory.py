@@ -113,7 +113,7 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
         if r.get("kind") == "artifact" and r.get("path"):
             p = r["path"]
             if p not in path2node:
-                nid = f"file{len(nodes) + 1}"
+                nid = "f" + _sha1(p)[:7]  # 由路径算出来，重建图也不会变
                 path2node[p] = nid
                 nodes[nid] = {"id": nid, "title": short_path(p), "text": p, "path": p, "count": 0}
             nodes[path2node[p]]["count"] += 1

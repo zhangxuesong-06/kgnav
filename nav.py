@@ -1,7 +1,10 @@
-"""路径查询：一个算法（Dijkstra）+ 多条候选 + 模板化解释。
+"""路径查询：Dijkstra 和双向搜索，外加多条候选和模板化解释。
 
-换算法时只替换 Navigator 子类，route 的签名和 Path 的形状不变。今天只有 dijkstra 一个实现，
-这是刻意的：图还没建起来之前，第二个算法只会让"哪条路径更合理"这个判断彻底失焦。
+换算法只替换 Navigator 子类：route 的签名和 Path 的形状不变，调用方一行不动。
+
+这里**没有 A\\***，不是漏了。A\\* 需要一个可采纳的启发式，而这个图里唯一候选的
+"语义距离"根本不存在（没有 embedding）。拿 h=0 冒充 A*，跑出来和 Dijkstra 一模一样，
+那就只是给同一件事起了个新名字。等语义层真的有了再加，且必须能验证它不退化解。
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ class Navigator:
         self.kinds = tuple(kinds)
         self.k = k
         self.penalty = penalty  # 已用过的边涨价，逼出第二条、第三条不同的走法
+        self.expansions = 0  # 弹出并结算过几个节点：换算法的唯一可测差别
 
     # ---- 主入口 -------------------------------------------------------
     def route(self, g: Graph, src: str, dst: str, k: int | None = None) -> list[Path]:
@@ -41,6 +45,7 @@ class Navigator:
         adj = self._adjacency(g)
         penalty: dict[tuple[str, str, str], float] = {}
         out: list[Path] = []
+        self.expansions = 0
         for _ in range(k * 4):  # 允许空转几次：罚过价的边会被跳过，得再找
             if len(out) >= k:
                 break
@@ -90,6 +95,7 @@ class Navigator:
             d, u = heapq.heappop(heap)
             if d > dist.get(u, float("inf")):
                 continue
+            self.expansions += 1
             if u == dst:
                 break
             for v, kind, cost, _conf in adj[u]:
@@ -111,7 +117,9 @@ class Navigator:
             cur = p
         nodes.reverse()
         kinds_seq.reverse()
+        return self._finish(g, nodes, kinds_seq)
 
+    def _finish(self, g: Graph, nodes: list[str], kinds_seq: list[str]) -> Path:
         edges = [(nodes[i], nodes[i + 1], kinds_seq[i]) for i in range(len(kinds_seq))]
         # 可信度取最弱一环，而不是各边相乘：跳数已经单独显示，再乘一遍等于罚长度；
         # 而且取 min 时，note 里那句"最弱一环"就是这条路的分数本身，可对账。
@@ -125,6 +133,73 @@ class Navigator:
     # ---- 解释（模板，禁止模型生成）--------------------------------------
     def note(self, g: Graph, p: Path) -> str:
         return _note(g, p)
+
+
+class Bidirectional(Navigator):
+    """两头一起搜。给出的路径必须和 Dijkstra 一模一样，省的是展开的节点数。"""
+
+    name = "bidirectional"
+
+    def _best(self, g, adj, src, dst, penalty) -> Path | None:
+        if src not in adj or dst not in adj:
+            return None
+        inf = float("inf")
+        df, db = {src: 0.0}, {dst: 0.0}
+        pf: dict[str, tuple[str, str]] = {}  # 前向：指向 src 一侧
+        pb: dict[str, tuple[str, str]] = {}  # 后向：指向 dst 一侧
+        hf, hb = [(0.0, src)], [(0.0, dst)]
+        done_f, done_b = set(), set()
+        best, meet = inf, None
+
+        while hf and hb and hf[0][0] + hb[0][0] < best:
+            if hf[0][0] <= hb[0][0]:
+                d, u = heapq.heappop(hf)
+                if u in done_f:
+                    continue
+                done_f.add(u)
+                self.expansions += 1
+                if u in db and d + db[u] < best:
+                    best, meet = d + db[u], u
+                for v, kind, cost, _c in adj[u]:
+                    nd = d + cost * penalty.get(_key(u, v, kind), 1.0)
+                    if nd < df.get(v, inf) - 1e-12:
+                        df[v] = nd
+                        pf[v] = (u, kind)
+                        heapq.heappush(hf, (nd, v))
+            else:
+                d, u = heapq.heappop(hb)
+                if u in done_b:
+                    continue
+                done_b.add(u)
+                self.expansions += 1
+                if u in df and d + df[u] < best:
+                    best, meet = d + df[u], u
+                for v, kind, cost, _c in adj[u]:
+                    nd = d + cost * penalty.get(_key(u, v, kind), 1.0)
+                    if nd < db.get(v, inf) - 1e-12:
+                        db[v] = nd
+                        pb[v] = (u, kind)
+                        heapq.heappush(hb, (nd, v))
+
+        if meet is None:
+            return None
+
+        nodes, kinds_seq = [meet], []
+        cur = meet
+        while cur != src:  # 往 src 走
+            p, kind = pf[cur]
+            kinds_seq.append(kind)
+            nodes.append(p)
+            cur = p
+        nodes.reverse()
+        kinds_seq.reverse()
+        cur = meet
+        while cur != dst:  # 往 dst 走
+            nxt, kind = pb[cur]
+            kinds_seq.append(kind)
+            nodes.append(nxt)
+            cur = nxt
+        return self._finish(g, nodes, kinds_seq)
 
 
 def _key(a: str, b: str, kind: str) -> tuple[str, str, str]:
@@ -161,6 +236,8 @@ def _bfs(adj: dict[str, list], start: str) -> set[str]:
 
 
 def _note(g: Graph, p: Path) -> str:
+    if not p.edges:
+        return f"《{g.title(p.nodes[0])}》就是它自己。"
     counts = Counter(e[2] for e in p.edges)
     kinds = "、".join(f"{CN[k]}×{c}" for k, c in counts.items())
     weakest = min(p.edges, key=lambda e: EDGE_KINDS[e[2]][1])
