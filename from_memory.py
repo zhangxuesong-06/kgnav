@@ -202,6 +202,7 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
         starts.sort()
 
     exact = window = miss = 0
+    node_turns: dict[str, set[str]] = defaultdict(set)
     for r in recs:
         hit = turn2ep.get((r.get("sid"), r.get("turnID")))
         why = "同一轮：turnID 对得上"
@@ -217,6 +218,10 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
             miss += 1
             continue
         add(rec2node[r["n"]], hit[0], "source", hit[1], why)
+        node_turns[rec2node[r["n"]]].add(hit[0])
+
+    for nid, turns in node_turns.items():
+        nodes[nid]["turns"] = sorted(turns)  # 这个节点属于哪几轮：判断路径是否只是复述来源
 
     graph = {
         "_说明": "由 from_memory.py 从 ~/.opencode-mem/stream.jsonl 只读抽取。勿手改。",

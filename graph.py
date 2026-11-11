@@ -45,6 +45,7 @@ class Graph:
     edges: list[Edge]
     texts: dict[str, str] = field(default_factory=dict)  # 检索用全文，显示仍用 title
     why: dict[tuple[str, str], tuple[int | None, str, str, tuple[str, str]]] = field(default_factory=dict)
+    turns: dict[str, set[str]] = field(default_factory=dict)  # 节点属于哪几轮
 
     def title(self, node: str) -> str:
         return self.titles.get(node, node)
@@ -119,6 +120,7 @@ def load(path: str | Path) -> Graph:
         unique.append(e)
 
     g = Graph(titles, unique, texts)
+    g.turns = {n["id"]: set(n.get("turns") or []) for n in raw["nodes"]}
     for e in unique:  # 同一对节点只留最有把握那条边的证据，和路线选择的口径一致
         key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
         old = g.why.get(key)

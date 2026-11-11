@@ -244,7 +244,21 @@ def _note(g: Graph, p: Path) -> str:
     wk, wc = CN[weakest[2]], EDGE_KINDS[weakest[2]][1]
     ev = list(dict.fromkeys(f"#{g.why_of(a, b)[0]}" for a, b, _k in p.edges if g.why_of(a, b)[0]))
     tail = f"；证据 {'、'.join(ev)}。" if ev else "。"
+    # 这条路径能不能整条落进同一个轮次里。能，就只是复述"这些出自同一轮"；不能，才是跨任务。
+    common: set[str] | None = None
+    for n in p.nodes:
+        ts = g.turns.get(n)
+        if not ts:
+            continue
+        common = set(ts) if common is None else (common & ts)
+        if not common:
+            break
+    span = ""
+    if common:
+        span = "；全程落在同一个轮次里——这是复述来源，不是新关系"
+    elif common is not None:
+        span = "；至少跨两个轮次"
     return (
         f"《{g.title(p.nodes[0])}》连到《{g.title(p.nodes[-1])}》，{len(p.nodes) - 1} 条边："
-        f"{kinds}；最弱一环 {wk}（{wc:.2f}）就是这条路的可信度{tail}"
+        f"{kinds}；最弱一环 {wk}（{wc:.2f}）就是这条路的可信度{span}{tail}"
     )
