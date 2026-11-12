@@ -37,6 +37,7 @@ class Edge:
     kind: str
     n: int | None = None  # 证据来自哪条记录
     quote: str = ""  # 那句原话 / 那条归属说明
+    review: bool = False  # 回顾型：后来的记录在正文里提到更早的记录
 
 
 @dataclass
@@ -44,7 +45,7 @@ class Graph:
     titles: dict[str, str]
     edges: list[Edge]
     texts: dict[str, str] = field(default_factory=dict)  # 检索用全文，显示仍用 title
-    why: dict[tuple[str, str], tuple[int | None, str, str, tuple[str, str]]] = field(default_factory=dict)
+    why: dict[tuple[str, str], tuple[int | None, str, str, tuple[str, str], bool]] = field(default_factory=dict)
     turns: dict[str, set[str]] = field(default_factory=dict)  # 节点属于哪几轮
 
     def title(self, node: str) -> str:
@@ -53,8 +54,8 @@ class Graph:
     def has(self, node: str) -> bool:
         return node in self.titles
 
-    def why_of(self, a: str, b: str) -> tuple[int | None, str, str, tuple[str, str]]:
-        return self.why.get((a, b) if a <= b else (b, a), (None, "", "", ("", "")))
+    def why_of(self, a: str, b: str) -> tuple[int | None, str, str, tuple[str, str], bool]:
+        return self.why.get((a, b) if a <= b else (b, a), (None, "", "", ("", ""), False))
 
     def resolve(self, name: str) -> tuple[str | None, list[str]]:
         """精确 id → #记录号 → 精确标题 → 唯一子串 → 二字组近似。命中多个就原样返回，不猜。"""
@@ -103,7 +104,7 @@ def load(path: str | Path) -> Graph:
     titles = {n["id"]: n["title"] for n in raw["nodes"]}
     texts = {n["id"]: n.get("text") or n["title"] for n in raw["nodes"]}
     edges = [
-        Edge(e["from"], e["to"], e["kind"], e.get("n"), e.get("quote") or "")
+        Edge(e["from"], e["to"], e["kind"], e.get("n"), e.get("quote") or "", e.get("review", False))
         for e in raw.get("links", [])
     ]
     edges += _derived_edges(raw["nodes"])
@@ -125,5 +126,5 @@ def load(path: str | Path) -> Graph:
         key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
         old = g.why.get(key)
         if old is None or EDGE_KINDS[e.kind][1] > EDGE_KINDS[old[2]][1]:
-            g.why[key] = (e.n, e.quote, e.kind, (e.src, e.dst))
+            g.why[key] = (e.n, e.quote, e.kind, (e.src, e.dst), e.review)
     return g

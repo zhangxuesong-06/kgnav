@@ -1,7 +1,7 @@
 """CLI：输入一对节点，输出可读的路径。
 
 §5 门槛一：从输入走到可读输出不超过 15 行，换算法只改一个字符串。
-run() 现在 13 行，别往里加东西。
+run() 现在 14 行，别往里加东西。
 """
 
 from __future__ import annotations
@@ -18,13 +18,21 @@ NAVIGATORS = {"dijkstra": Navigator, "bidirectional": Bidirectional}  # 加算�
 NAVIGATOR = "dijkstra"  # ← 换算法只改这一个字符串
 
 
-def run(g: Graph, src: str, dst: str, kinds: tuple[str, ...], k: int, why: bool = False) -> int:
-    nav = NAVIGATORS[NAVIGATOR](kinds=kinds, k=k)
+def run(
+    g: Graph,
+    src: str,
+    dst: str,
+    kinds: tuple[str, ...],
+    k: int,
+    why: bool = False,
+    review: bool = True,
+) -> int:
+    nav = NAVIGATORS[NAVIGATOR](kinds=kinds, k=k, review=review)
     paths = nav.route(g, src, dst)
     present = {e.kind for e in g.edges if e.kind in kinds}  # 图里真有的边类，不是配置里有几类
-    _header(g, src, dst, nav.name, present)
+    _header(g, src, dst, nav.name, present, review)
     if not paths:
-        print(dead_end(g, src, dst, kinds))
+        print(dead_end(g, src, dst, kinds, review))
         return 0
     for i, p in enumerate(paths, 1):
         print(f"路径 {i}   cost {p.cost:<6.2f} confidence {p.confidence:<5.2f} {len(p.nodes) - 1} 跳")
@@ -49,16 +57,17 @@ def _chain(g: Graph, p, why: bool = False) -> str:
 
 
 def _ev(g: Graph, a: str, b: str) -> str:
-    n, quote, _kind, (src, _dst) = g.why_of(a, b)
+    n, quote, _kind, (src, _dst), _rev = g.why_of(a, b)
     if not n:
         return "—（这条边没有留下证据）"
     back = " ←反向" if src == b else ""  # 证据是 b 指向 a 的那句话，不是顺着走的方向
     return f"#{n}{back}「{quote}」"
 
 
-def _header(g: Graph, src: str, dst: str, nav: str, present: set[str]) -> None:
+def _header(g: Graph, src: str, dst: str, nav: str, present: set[str], review: bool = True) -> None:
     kinds = "/".join(CN[x] for x in EDGE_KINDS if x in present) or "无"
-    print(f"查询：《{g.title(src)}》 → 《{g.title(dst)}》    {nav}    边类型：{kinds}（{len(present)}/{len(EDGE_KINDS)}）")
+    flag = "" if review else "    已排除回顾型引用"
+    print(f"查询：《{g.title(src)}》 → 《{g.title(dst)}》    {nav}    边类型：{kinds}（{len(present)}/{len(EDGE_KINDS)}）{flag}")
     print("─" * 72)
 
 
@@ -70,6 +79,7 @@ def main() -> int:
     ap.add_argument("--no-semantic", action="store_true", help="整类关掉语义近邻边，再跑一遍看区别")
     ap.add_argument("--graph", default="fake_graph.json", help="data/ 下的图文件名")
     ap.add_argument("--why", action="store_true", help="每一跳把那句证据也打出来")
+    ap.add_argument("--no-review", action="store_true", help="整类关掉回顾型引用（后来的记录提到先前的），做对照")
     a = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -85,7 +95,7 @@ def main() -> int:
     if src == dst:
         print(f"同一个节点：《{g.title(src)}》，用不着找路。")
         return 0
-    return run(g, src, dst, kinds, a.k, a.why)
+    return run(g, src, dst, kinds, a.k, a.why, not a.no_review)
 
 
 def _complain(g: Graph, name: str, hits: list[str]) -> None:

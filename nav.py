@@ -33,10 +33,12 @@ class Navigator:
         kinds: tuple[str, ...] = ("link", "source", "tag", "semantic"),
         k: int = 3,
         penalty: float = 5.0,
+        review: bool = True,
     ) -> None:
         self.kinds = tuple(kinds)
         self.k = k
         self.penalty = penalty  # 已用过的边涨价，逼出第二条、第三条不同的走法
+        self.review = review  # False = 整类关掉"回顾型引用"，用来对照污染有多大
         self.expansions = 0  # 弹出并结算过几个节点：换算法的唯一可测差别
 
     # ---- 主入口 -------------------------------------------------------
@@ -73,6 +75,8 @@ class Navigator:
         best: dict[tuple[str, str], tuple[float, float, str]] = {}
         for e in g.edges:
             if e.kind not in self.kinds:
+                continue
+            if not self.review and e.review:
                 continue
             cost, conf = EDGE_KINDS[e.kind]
             key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
@@ -206,14 +210,25 @@ def _key(a: str, b: str, kind: str) -> tuple[str, str, str]:
     return (a, b, kind) if a <= b else (b, a, kind)
 
 
-def dead_end(g: Graph, src: str, dst: str, kinds: tuple[str, ...]) -> str:
-    """说清为什么此路不通。孤岛和"缺边"是两回事，别混成一句'没找到'。"""
-    adj = Navigator(kinds=kinds)._adjacency(g)
-    if not adj.get(src) and not adj.get(dst):
-        return "此路不通。两端都是孤立点：没有任何记录引用它们，也不属于任何已归档的轮次。这是采集侧没留边，不是算法没找到。"
-    for node, who in ((src, "源"), (dst, "目标")):
-        if not adj.get(node):
-            return f"此路不通。{who}节点是孤立点（度 0）：没有记录引用它，也不在任何已归档的轮次里。这是采集侧没留边，不是算法没找到。"
+def dead_end(g: Graph, src: str, dst: str, kinds: tuple[str, ...], review: bool = True) -> str:
+    """说清为什么此路不通。孤岛、被开关切断、"缺边"是三回事，别混成一句'没找到'。"""
+    adj = Navigator(kinds=kinds, review=review)._adjacency(g)
+    full = adj if review else Navigator(kinds=kinds, review=True)._adjacency(g)
+
+    def why_isolated(node: str) -> str | None:
+        if adj.get(node):
+            return None
+        if full.get(node):  # 本来有边，只是全被开关关掉了
+            return "它只连着回顾型引用（后来的记录在讨论它），被 --no-review 整类关掉了"
+        return "没有任何记录引用它，也不在任何已归档的轮次里"
+
+    a_iso, b_iso = why_isolated(src), why_isolated(dst)
+    if a_iso and b_iso:
+        return f"此路不通。两端都是孤立点：源{a_iso}；目标{b_iso}。"
+    if a_iso:
+        return f"此路不通。源节点是孤立点：{a_iso}。"
+    if b_iso:
+        return f"此路不通。目标节点是孤立点：{b_iso}。"
     reach = _bfs(adj, src)
     if dst in reach:
         return "此路不通。可两端其实是连着的——这是搜索本身的问题，不是数据问题，记一笔。"
@@ -244,20 +259,23 @@ def _note(g: Graph, p: Path) -> str:
     wk, wc = CN[weakest[2]], EDGE_KINDS[weakest[2]][1]
     ev = list(dict.fromkeys(f"#{g.why_of(a, b)[0]}" for a, b, _k in p.edges if g.why_of(a, b)[0]))
     tail = f"；证据 {'、'.join(ev)}。" if ev else "。"
-    # 这条路径能不能整条落进同一个轮次里。能，就只是复述"这些出自同一轮"；不能，才是跨任务。
-    common: set[str] | None = None
-    for n in p.nodes:
-        ts = g.turns.get(n)
-        if not ts:
-            continue
-        common = set(ts) if common is None else (common & ts)
-        if not common:
-            break
+    # 这条路径能不能整条落进同一个轮次里。只能拿有归属的节点判，
+    # 而且"同轮"必须所有节点都有归属才敢说——少一个就是判不了，不是同轮。
+    attributed = [n for n in p.nodes if g.turns.get(n)]
+    common = set(g.turns[attributed[0]]) if attributed else set()
+    for n in attributed[1:]:
+        common &= g.turns[n]
+    missing = len(p.nodes) - len(attributed)
+    rev = sum(1 for a, b, k in p.edges if k == "link" and g.why_of(a, b)[4])  # 只有 link 才可能回顾
     span = ""
-    if common:
+    if rev == len(p.edges):  # 全靠回顾型：比轮次更值得先说
+        span = "；全靠回顾型引用撑着（后来的记录在讨论它们），不是原任务里的关系"
+    elif len(attributed) >= 2 and not common:
+        span = "；至少跨两个轮次"  # 有两个节点各自归属不同轮次，这是硬证据
+    elif attributed and not missing and common:
         span = "；全程落在同一个轮次里——这是复述来源，不是新关系"
-    elif common is not None:
-        span = "；至少跨两个轮次"
+    elif attributed:
+        span = f"；{missing}/{len(p.nodes)} 个节点没有轮次归属，判不出是不是同一轮"
     return (
         f"《{g.title(p.nodes[0])}》连到《{g.title(p.nodes[-1])}》，{len(p.nodes) - 1} 条边："
         f"{kinds}；最弱一环 {wk}（{wc:.2f}）就是这条路的可信度{span}{tail}"

@@ -24,8 +24,8 @@ HERE = Path(__file__).parent
 NAVS = {"dijkstra": Navigator, "bidirectional": Bidirectional}
 
 
-def run_one(cls, g, src, dst, k):
-    nav = cls(k=k)
+def run_one(cls, g, src, dst, k, review):
+    nav = cls(k=k, review=review)
     t0 = time.perf_counter()
     paths = nav.route(g, src, dst)
     ms = (time.perf_counter() - t0) * 1000
@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", default=str(HERE / "queries.json"))
     ap.add_argument("-k", type=int, default=3)
+    ap.add_argument("--no-review", action="store_true", help="整类关掉回顾型引用，做对照")
     a = ap.parse_args(argv)
 
     batches = json.loads(Path(a.queries).read_text(encoding="utf-8"))
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             results = {}
             for name, cls in NAVS.items():
-                paths, exp, ms = run_one(cls, g, src, dst, a.k)
+                paths, exp, ms = run_one(cls, g, src, dst, a.k, not a.no_review)
                 results[name] = paths
                 hits = len(paths)
                 hops = len(paths[0].nodes) - 1 if paths else 0

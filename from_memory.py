@@ -154,25 +154,49 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
     # 3) 边。每条边都带证据：哪条记录（#N）+ 那句原话，方便回 L0 核对。
     edges: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
+    # 轮次摘录的行首结构位才是真引用："产物 #1595：路径"、"助手摘录 #1593：…"。
+    # 摘录正文里出现的 #N 是"引用之引用"——那段话本身在讨论别的记录，不该算这条边。
+    STRUCT_LABELS = {"产物", "助手摘录", "来源", "请求"}
 
-    def add(a: str, b: str, kind: str, n: int | None = None, quote: str = "") -> bool:
+    def add(
+        a: str, b: str, kind: str, n: int | None = None, quote: str = "", review: bool = False
+    ) -> bool:
         if a == b:
             return False
         k = (a, b, kind)
         kr = (b, a, kind)
         if k in seen or kr in seen:
+            if review is False:  # 同一对边只要有一条不是回顾型的，就不该被标成回顾型
+                for e in edges:
+                    if (e["from"], e["to"], e["kind"]) in (k, kr):
+                        e["review"] = False
+                        e["n"], e["quote"] = n, quote  # 证据也换成结构位那条
+                        break
             return False
         seen.add(k)
-        edges.append({"from": a, "to": b, "kind": kind, "n": n, "quote": quote})
+        edges.append(
+            {"from": a, "to": b, "kind": kind, "n": n, "quote": quote, "review": review}
+        )
         return True
 
     for r in recs:
         src = rec2node[r["n"]]
         text = r.get("text") or ""
+        is_ep = r.get("kind") == "episode"
         for m in REF.finditer(text):
-            tgt = rec2node.get(int(m.group(1)))
-            if tgt is not None:
-                add(src, tgt, "link", r["n"], _snippet(text, m.start(), m.end()))
+            tgt_n = int(m.group(1))
+            tgt = rec2node.get(tgt_n)
+            if tgt is None:
+                continue
+            # 回顾型（可整类关掉）有两种：
+            #   1. 普通记录在正文里提到更早的记录 —— 多半是"后来在讨论它"
+            #   2. 轮次摘录的正文里出现的引用 —— 那是摘录内容在讨论别的记录，是引用之引用
+            if is_ep:
+                line_start = text.rfind("\n", 0, m.start()) + 1
+                review = text[line_start : m.start()].strip() not in STRUCT_LABELS
+            else:
+                review = tgt_n < r["n"]
+            add(src, tgt, "link", r["n"], _snippet(text, m.start(), m.end()), review)
 
     # 3b) episode 自己记着这轮的 sourceIDs / answerIDs / artifactIDs（UUID），
     #     这些是真·精确引用，比正文里的 #N 更硬，而且能救回没有 turnID 的记录。
@@ -224,10 +248,12 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
         nodes[nid]["turns"] = sorted(turns)  # 这个节点属于哪几轮：判断路径是否只是复述来源
 
     graph = {
-        "_说明": "由 from_memory.py 从 ~/.opencode-mem/stream.jsonl 只读抽取。勿手改。",
+        "_说明": "由 from_memory.py 只读抽取，勿手改。重新生成会覆盖。",
         "nodes": list(nodes.values()),
         "links": edges,
     }
+    base = health(nodes, edges)
+    no_rev = health(nodes, [e for e in edges if not e.get("review")])
     stats = {
         "records": len(recs),
         "nodes": len(nodes),
@@ -237,7 +263,11 @@ def build(recs: list[dict], use_window: bool = True) -> tuple[dict, dict]:
         "exact": exact,
         "window": window,
         "no_episode": miss,
-        **health(nodes, edges),
+        "review": sum(1 for e in edges if e.get("review")),
+        "isolated": base["isolated"],
+        "biggest": base["biggest"],
+        "isolated_no_review": no_rev["isolated"],
+        "biggest_no_review": no_rev["biggest"],
     }
     return graph, stats
 
@@ -307,6 +337,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"健康：孤岛 {stats['isolated']}/{stats['nodes']}"
         f"（{stats['isolated'] / stats['nodes']:.0%}），最大连通块 {stats['biggest']}"
+    )
+    print(
+        f"回顾型引用 {stats['review']} 条（{stats['review'] / max(1, len(graph['links'])):.0%}）；"
+        f"整类关掉后：孤岛 {stats['isolated_no_review']}，最大连通块 {stats['biggest_no_review']}"
     )
     same = before == after
     print("源文件指纹：" + ("跑前跑后一致，未改动" if same else "**变了，停手**"))
