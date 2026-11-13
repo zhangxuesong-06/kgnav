@@ -18,14 +18,20 @@ from pathlib import Path
 EDGE_KINDS: dict[str, tuple[float, float]] = {
     "link": (1.0, 0.90),      # 显式链接：wikilink / 文内引用
     "source": (1.2, 0.85),    # 同来源：同一篇论文拆出的笔记
+    "session": (2.0, 0.60),   # 同会话：同一会话里相邻的两轮（比同轮弱）
     "tag": (1.5, 0.70),       # 同标签：手工标签
+    "method": (1.6, 0.70),    # 同方法：方法词表命中（举一反三的桥）
+    "cooccur": (6.0, 0.45),   # 共现：你问过的一对。故意很贵——只在没有更强解释时兜底，不挤掉真路径
     "semantic": (3.0, 0.35),  # 语义近邻：最脏，必须能整类关掉
 }
 
 CN = {
     "link": "显式链接",
     "source": "同来源",
+    "session": "同会话",
     "tag": "同标签",
+    "method": "同方法",
+    "cooccur": "共现",
     "semantic": "语义近邻",
 }
 
@@ -93,9 +99,10 @@ def _derived_edges(nodes: list[dict]) -> list[Edge]:
                 vals = [vals]
             for v in vals:
                 buckets[v].append(n["id"])
-        for group in buckets.values():
+        for bucket, group in buckets.items():
+            label = f"同标签：{bucket}" if kind == "tag" else f"同来源：{bucket}"
             for a, b in itertools.combinations(group, 2):
-                out.append(Edge(a, b, kind))
+                out.append(Edge(a, b, kind, None, label))
     return out
 
 

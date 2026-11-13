@@ -6,6 +6,13 @@ venv/
 
 # 从本机记忆库抽出来的图：含个人记忆原文和本机绝对路径，只在本机生成，不入库
 data/mem_graph.json
+# 查询历史：记录你问过什么，属于个人行为数据
+data/queries.jsonl
+# 手工标签：你的断言，属于个人注释
+data/tags.json
+data/tags.draft.json
+# 方法词表：适配器输入，kgnav 不维护它（避免和记忆插件的 aliases 漂移）
+data/methods.json
 
 # 临时输出
 *.log

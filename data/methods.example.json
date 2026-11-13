@@ -1,0 +1,7 @@
+{
+  "_说明": "方法词表的模板，不是 kgnav 的索引。复制成 data/methods.json 再用，或者用 --methods 指向别处的文件（比如记忆插件以后导出的方法表）。格式：{方法名: [别名/写法]}；一个方法最多挂 40 条记录，超了跳过。",
+  "Dijkstra": ["dijkstra", "最短路"],
+  "双向搜索": ["双向搜索", "bidirectional"],
+  "幂等": ["幂等", "idempotent"],
+  "手眼标定": ["手眼标定", "handeye", "calibrateHandEye", "外参"]
+}

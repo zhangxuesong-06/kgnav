@@ -30,7 +30,7 @@ class Navigator:
 
     def __init__(
         self,
-        kinds: tuple[str, ...] = ("link", "source", "tag", "semantic"),
+        kinds: tuple[str, ...] = tuple(EDGE_KINDS),
         k: int = 3,
         penalty: float = 5.0,
         review: bool = True,
@@ -206,20 +206,109 @@ class Bidirectional(Navigator):
         return self._finish(g, nodes, kinds_seq)
 
 
+@dataclass(frozen=True)
+class Neighbor:
+    node: str
+    kind: str
+    direction: str  # 只有引用边有意义：out = 它引用，in = 引用它
+    evidence: str
+    confidence: float
+    n: int | None = None
+    review: bool = False
+
+
+GROUPS = ("概念", "引用", "同源", "共现", "近邻")
+GROUP_OF = {
+    "tag": "概念",
+    "method": "概念",
+    "link": "引用",
+    "source": "同源",
+    "session": "同源",
+    "cooccur": "共现",
+    "semantic": "近邻",
+}
+
+
+def neighbors(
+    g: Graph,
+    node: str,
+    kinds: tuple[str, ...] = tuple(EDGE_KINDS),
+    review: bool = True,
+) -> dict[str, list[Neighbor]]:
+    """一个种子的有界邻域，按四组分开。概念排在最前——它是解释力的来源。"""
+    out: dict[str, list[Neighbor]] = {name: [] for name in GROUPS}
+    seen: set[tuple[str, str, str]] = set()
+    for e in g.edges:
+        if e.kind not in kinds or (not review and e.review):
+            continue
+        if e.src == node:
+            other, direction = e.dst, "out"
+        elif e.dst == node:
+            other, direction = e.src, "in"
+        else:
+            continue
+        if other not in g.titles:  # 悬空端点：坏数据不该冒充邻居
+            continue
+        key = (other, e.kind, direction)
+        if key in seen:
+            continue
+        seen.add(key)
+        group = GROUP_OF.get(e.kind)
+        if group is None:
+            continue
+        out[group].append(
+            Neighbor(
+                other,
+                e.kind,
+                direction if group == "引用" else "",
+                e.quote or "",
+                EDGE_KINDS[e.kind][1],
+                e.n,
+                e.review,
+            )
+        )
+    for name in out:
+        # 同一可信度下，有方向的引用优先显示"它引用"；其余按标题稳定排序
+        out[name].sort(key=lambda x: (-x.confidence, x.direction != "out", g.title(x.node)))
+    # 同一个邻居只出现在最靠前的组里：概念 > 引用 > 同源 > 共现 > 近邻。
+    # 否则一个文件会同时以"引用它的"和"同来源"出现两次，纯噪音。
+    seen_nodes: set[str] = set()
+    for name in GROUPS:
+        kept = []
+        for x in out[name]:
+            if x.node in seen_nodes:
+                continue
+            seen_nodes.add(x.node)
+            kept.append(x)
+        out[name] = kept
+    return out
+
+
 def _key(a: str, b: str, kind: str) -> tuple[str, str, str]:
     return (a, b, kind) if a <= b else (b, a, kind)
+
+
+def cut_kinds(g: Graph, node: str, kinds: tuple[str, ...], review: bool = True) -> list[str]:
+    """这个节点上、被当前开关关掉的边类型。说清"没边"和"被开关切了"的区别。"""
+    out: list[str] = []
+    for e in g.edges:
+        if e.src != node and e.dst != node:
+            continue
+        if e.kind not in kinds or (not review and e.review):
+            out.append(CN[e.kind])
+    return list(dict.fromkeys(out))
 
 
 def dead_end(g: Graph, src: str, dst: str, kinds: tuple[str, ...], review: bool = True) -> str:
     """说清为什么此路不通。孤岛、被开关切断、"缺边"是三回事，别混成一句'没找到'。"""
     adj = Navigator(kinds=kinds, review=review)._adjacency(g)
-    full = adj if review else Navigator(kinds=kinds, review=True)._adjacency(g)
 
     def why_isolated(node: str) -> str | None:
         if adj.get(node):
             return None
-        if full.get(node):  # 本来有边，只是全被开关关掉了
-            return "它只连着回顾型引用（后来的记录在讨论它），被 --no-review 整类关掉了"
+        cut = cut_kinds(g, node, kinds, review)
+        if cut:  # 本来有边，只是全被当前开关关掉了
+            return f"它只连着被当前开关关掉的边（{'、'.join(cut)}），换个开关再看"
         return "没有任何记录引用它，也不在任何已归档的轮次里"
 
     a_iso, b_iso = why_isolated(src), why_isolated(dst)
@@ -258,7 +347,12 @@ def _note(g: Graph, p: Path) -> str:
     weakest = min(p.edges, key=lambda e: EDGE_KINDS[e[2]][1])
     wk, wc = CN[weakest[2]], EDGE_KINDS[weakest[2]][1]
     ev = list(dict.fromkeys(f"#{g.why_of(a, b)[0]}" for a, b, _k in p.edges if g.why_of(a, b)[0]))
-    tail = f"；证据 {'、'.join(ev)}。" if ev else "。"
+    if ev:
+        tail = f"；证据 {'、'.join(ev)}。"
+    elif any(k == "cooccur" for _a, _b, k in p.edges):
+        tail = "；证据是查询记录本身。"
+    else:
+        tail = "。"
     # 这条路径能不能整条落进同一个轮次里。只能拿有归属的节点判，
     # 而且"同轮"必须所有节点都有归属才敢说——少一个就是判不了，不是同轮。
     attributed = [n for n in p.nodes if g.turns.get(n)]
