@@ -284,6 +284,33 @@ def neighbors(
     return out
 
 
+def concept_names(g: Graph) -> list[str]:
+    return sorted(
+        {
+            e.quote[len("同标签：") :]
+            for e in g.edges
+            if e.kind == "tag" and (e.quote or "").startswith("同标签：")
+        }
+    )
+
+
+def concept_members(g: Graph, name: str) -> tuple[list[str], list[str]]:
+    """按标签名找成员。返回 (成员, 所有标签名)；名字不唯一或找不到时成员为空。"""
+    names = concept_names(g)
+    exact = [t for t in names if t == name]
+    cands = exact or [t for t in names if name in t]
+    if len(cands) != 1:
+        return [], names
+    tag = cands[0]
+    members = {
+        n
+        for e in g.edges
+        if e.kind == "tag" and e.quote == f"同标签：{tag}"
+        for n in (e.src, e.dst)
+    }
+    return sorted(members), names
+
+
 def _key(a: str, b: str, kind: str) -> tuple[str, str, str]:
     return (a, b, kind) if a <= b else (b, a, kind)
 

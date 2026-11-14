@@ -146,8 +146,65 @@ def check_render() -> int:
     return bad
 
 
+def check_concept_expand() -> int:
+    """记录种子经过方法枢纽时，要把同方法的其他记录也带出来一行。"""
+    bad = 0
+    from cli import _render_about
+
+    titles = {
+        "a": "A 种子",
+        "h": "方法：X",
+        "m1": "M1 也用了",
+        "m2": "M2 也用了",
+        "z": "Z 无关",
+    }
+    edges = [
+        Edge("a", "h", "method", 1, "提到「x」（方法：X）", False),
+        Edge("m1", "h", "method", 2, "提到「x」", False),
+        Edge("m2", "h", "method", 3, "提到「x」", False),
+    ]
+    g = Graph(titles, edges, dict(titles), turns={})
+    text = "\n".join(_render_about(g, neighbors(g, "a"), limit=5, seed="a"))
+    if "另外 2 条" not in text:
+        bad += 1
+        print(f"  ✗ 没带出同方法的其他记录：\n{text}")
+    if "M1 也用了" not in text:
+        bad += 1
+        print(f"  ✗ 没列出成员标题：\n{text}")
+    print(f"概念展开：{'通过' if not bad else '失败'}")
+    return bad
+
+
+def check_concept_members() -> int:
+    """--concept：按标签名找到所有记录；名字不唯一要能报候选。"""
+    bad = 0
+    from nav import concept_members
+
+    titles = {"a": "A", "b": "B", "c": "C"}
+    edges = [
+        Edge("a", "b", "tag", None, "同标签：记忆插件", False),
+        Edge("b", "c", "tag", None, "同标签：记忆插件", False),
+        Edge("a", "c", "tag", None, "同标签：另一个", False),
+    ]
+    g = Graph(titles, edges, dict(titles), turns={})
+    members, names = concept_members(g, "记忆插件")
+    if set(members) != {"a", "b", "c"}:
+        bad += 1
+        print(f"  ✗ 成员应是 a/b/c，实际 {members}")
+    members2, _ = concept_members(g, "记忆")
+    if members2 != members:
+        bad += 1
+        print(f"  ✗ 唯一片段应能匹配：{members2}")
+    _, names_all = concept_members(g, "不存在")
+    if "记忆插件" not in names_all:
+        bad += 1
+        print(f"  ✗ 找不到时应列出候选：{names_all}")
+    print(f"标签成员：{'通过' if not bad else '失败'}")
+    return bad
+
+
 def main() -> int:
-    bad = check() + check_render()
+    bad = check() + check_render() + check_concept_expand() + check_concept_members()
     print("全部通过" if not bad else f"**{bad} 处失败**")
     return 1 if bad else 0
 

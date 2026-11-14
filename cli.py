@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from graph import CN, EDGE_KINDS, Graph, load
-from nav import Bidirectional, GROUPS, Navigator, cut_kinds, dead_end, neighbors
+from nav import Bidirectional, GROUPS, Navigator, concept_members, cut_kinds, dead_end, neighbors
 from querylog import log_query
 
 HERE = Path(__file__).parent
@@ -83,8 +83,11 @@ def _header(
     print("─" * 72)
 
 
-def _show_method(g: Graph, name: str) -> int:
+def _show_method(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)) -> int:
     """以方法为中心：这个方法在哪些记录里出现过。举一反三的入口。"""
+    if "method" not in kinds:
+        print("方法边被开关关掉了（--no-method），先打开再看。")
+        return 0
     exact = [n for n in g.titles if g.title(n) == f"方法：{name}"]
     cands = exact or [
         n for n in g.titles if g.title(n).startswith("方法：") and name in g.title(n)
@@ -123,8 +126,8 @@ def _list_methods(g: Graph) -> int:
     return 0
 
 
-def _render_about(g: Graph, nb: dict, limit: int = 8) -> list[str]:
-    """把邻域渲染成行。概念在最前，每组截断并报剩余数。"""
+def _render_about(g: Graph, nb: dict, limit: int = 8, seed: str | None = None) -> list[str]:
+    """把邻域渲染成行。概念在最前，每组截断并报剩余数；方法枢纽会展开一行成员。"""
     lines: list[str] = []
     for group in GROUPS:
         items = nb.get(group, [])
@@ -141,9 +144,38 @@ def _render_about(g: Graph, nb: dict, limit: int = 8) -> list[str]:
             mark = "（回顾型）" if x.review else ""
             tail = f"  {ev}" if ev else ""
             lines.append(f"  · 《{g.title(x.node)}》  [{tag}]{mark}{tail}")
+            # 方法枢纽再走一跳：把"还谁用过"直接写出来，否则记录种子看不到举一反三
+            if group == "概念" and seed and g.title(x.node).startswith("方法："):
+                members = sorted(
+                    {
+                        e.src if e.dst == x.node else e.dst
+                        for e in g.edges
+                        if x.node in (e.src, e.dst) and e.kind == "method" and seed not in (e.src, e.dst)
+                    }
+                )
+                if members:
+                    show = "".join(f"《{g.title(m)[:18]}》" for m in members[:2])
+                    lines.append(f"      ↳ 另外 {len(members)} 条也用它：{show}…")
         if len(items) > limit:
             lines.append(f"  …还有 {len(items) - limit} 条")
     return lines
+
+
+def _show_concept(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)) -> int:
+    """以标签为中心：这个标签下有哪些记录。"""
+    if "tag" not in kinds:
+        print("标签边被开关关掉了（--no-tag），先打开再看。")
+        return 0
+    members, names = concept_members(g, name)
+    if not members:
+        print(f"没有唯一匹配的标签：{name}")
+        print("可选：" + "、".join(names) if names else "（图里还没有标签边，先在 data/tags.json 里写）")
+        return 0
+    print(f"《标签：{name}》—— {len(members)} 条记录")
+    print("─" * 72)
+    for m in members:
+        print(f"  {m:<12}{g.title(m)}")
+    return 0
 
 
 def _show_about(g: Graph, name: str, kinds: tuple[str, ...], review: bool, limit: int) -> int:
@@ -158,7 +190,7 @@ def _show_about(g: Graph, name: str, kinds: tuple[str, ...], review: bool, limit
     flag = "" if review else "    已排除回顾型引用"
     print(f"《{g.title(nid)}》    {nid}    1 跳邻域{flag}")
     print("─" * 72)
-    lines = _render_about(g, nb, limit)
+    lines = _render_about(g, nb, limit, nid)
     if lines:
         print("\n".join(lines))
         return 0
@@ -178,6 +210,7 @@ def main() -> int:
     ex.add_argument("--method", help="以某个方法为中心：看它落到哪些记录（举一反三）")
     ex.add_argument("--methods", action="store_true", help="列出所有方法枢纽")
     ex.add_argument("--about", help="以某个节点为中心：看它的邻域（新的主入口）")
+    ex.add_argument("--concept", help="以某个标签为中心：看这个标签下有哪些记录")
     ap.add_argument("--about-limit", type=int, default=8, help="每组最多显示几条")
     ap.add_argument("-k", type=int, default=3, help="要几条候选路径")
     ap.add_argument("--no-semantic", action="store_true", help="整类关掉语义近邻边，再跑一遍看区别")
@@ -210,9 +243,11 @@ def main() -> int:
     if a.methods:
         return _list_methods(g)
     if a.method:
-        return _show_method(g, a.method)
+        return _show_method(g, a.method, kinds)
     if a.about:
         return _show_about(g, a.about, kinds, not a.no_review, a.about_limit)
+    if a.concept:
+        return _show_concept(g, a.concept, kinds)
     if not a.src or not a.dst:
         if a.src and not a.dst:
             print(f"只给了一个节点：《{a.src}》。用 --about 看它的邻域，或补上终点找路径。")
