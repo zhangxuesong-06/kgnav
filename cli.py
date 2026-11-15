@@ -84,7 +84,7 @@ def _header(
 
 
 def _show_method(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)) -> int:
-    """以方法为中心：这个方法在哪些记录里出现过。举一反三的入口。"""
+    """以方法为中心列出词面命中的记录；提到不等于实际使用。"""
     if "method" not in kinds:
         print("方法边被开关关掉了（--no-method），先打开再看。")
         return 0
@@ -108,7 +108,7 @@ def _show_method(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)
             if hub in (e.src, e.dst) and e.kind == "method"
         }
     )
-    print(f"《{g.title(hub)}》—— {len(members)} 条记录用过它")
+    print(f"《{g.title(hub)}》—— {len(members)} 条记录提到它")
     print("─" * 72)
     for m in members:
         print(f"  {m:<12}{g.title(m)}")
@@ -155,7 +155,7 @@ def _render_about(g: Graph, nb: dict, limit: int = 8, seed: str | None = None) -
                 )
                 if members:
                     show = "".join(f"《{g.title(m)[:18]}》" for m in members[:2])
-                    lines.append(f"      ↳ 另外 {len(members)} 条也用它：{show}…")
+                    lines.append(f"      ↳ 另外 {len(members)} 条也提到它：{show}…")
         if len(items) > limit:
             lines.append(f"  …还有 {len(items) - limit} 条")
     return lines

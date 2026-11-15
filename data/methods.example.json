@@ -1,5 +1,5 @@
 {
-  "_说明": "方法词表的模板，不是 kgnav 的索引。复制成 data/methods.json 再用，或者用 --methods 指向别处的文件（比如记忆插件以后导出的方法表）。格式：{方法名: [别名/写法]}；一个方法最多挂 40 条记录，超了跳过。",
+  "_说明": "仅为输入格式示例，不在 kgnav 维护实际词表。推荐由 dsh-remember 的 agent-memory/methods.mjs export 导出，--methods 直接指向输出。格式：{方法名: [规范名及别名/写法]}。独立方法表不自动包含普通 aliases 或 PMI；词面命中不证明实际使用，不生成标签。一个方法最多挂 40 条记录，超了跳过。",
   "Dijkstra": ["dijkstra", "最短路"],
   "双向搜索": ["双向搜索", "bidirectional"],
   "幂等": ["幂等", "idempotent"],

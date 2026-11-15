@@ -34,7 +34,7 @@ python cli.py --about 路径解释模板
 ```
 概念 · 1
   · 《方法：手眼标定》  [同方法]  「提到「handeye」（方法：手眼标定）」
-      ↳ 另外 9 条也用它：《#1567 问得对…》《#1617 规划已经写到…》…
+      ↳ 另外 9 条也提到它：《#1567 问得对…》《#1617 规划已经写到…》…
 ```
 
 这就是从一条记录出发的"举一反三"——不用先知道方法叫什么。
@@ -162,7 +162,7 @@ python cli.py --method 手眼标定 --graph mem_graph.json
 ```
 
 ```
-《方法：手眼标定》—— 10 条记录用过它
+《方法：手眼标定》—— 10 条记录提到它
   #32   先说个好消息：插件已经在跑了…
   #2081 能，而且这个比"统一模型接口"简单得多…
   …
@@ -170,7 +170,32 @@ python cli.py --method 手眼标定 --graph mem_graph.json
 
 方法词表在 `data/methods.json`：`{方法名: [别名/写法]}`。导出时按子串匹配记录全文（大小写不敏感），命中就建一个「方法：X」枢纽，把不同项目、不同时间的记录接起来。一个方法最多挂 40 条记录，超了跳过——太通用的词没有区分度。
 
-**边界**：kgnav 不维护方法词表。`methods.json` 是适配器输入（已 gitignore），模板是 `methods.example.json`。记忆插件已经有 `aliases.json` / `assoc.json` 做检索联想——那是它的活；kgnav 只负责把「同方法」变成可以走、可以解释的边。如果插件以后导出方法表，用 `--methods` 指过去，不要两边各抄一份。
+**边界**：kgnav 不维护方法词表。`methods.json` 是适配器输入（已 gitignore），模板是 `methods.example.json`。
+记忆插件 dsh-remember 现在提供独立方法表导出，直接把 `--methods` 指过去，不要两边各抄一份：
+
+```bash
+# 在 dsh-remember 中维护明确的方法及别名（下面仅为示例）
+node agent-memory/methods.mjs set 手眼标定 handeye calibrateHandEye
+node agent-memory/methods.mjs export --out <库外导出目录>/methods.json
+# 在 kgnav 中消费
+python from_memory.py --mem-home <选定的记录目录> --methods <库外导出目录>/methods.json
+python cli.py --about r1 --graph mem_graph.json --no-log
+python cli.py --method 手眼标定 --graph mem_graph.json --no-log
+```
+
+方法名和别名仅由记忆侧的独立 `methods.json` 维护；普通 `aliases.json` 不自动升级为方法，
+`assoc.json` 的 PMI 与查询共现也不代表语义关系。kgnav 保留命中词并只说“提到”，
+不据此断言实际使用，更不自动生成标签。标签仍须使用者另行提供。
+源表改动后要重新导出并抽图；导出快照不在 kgnav 侧编辑。
+
+不接触私人数据的完整流程验证在 dsh-remember 仓库执行：
+
+```bash
+node agent-memory/test-kgnav.mjs --kgnav <kgnav源码目录>
+```
+
+验证只复制本仓库五个 Python 源码文件，使用记忆仓库的合成 fixture 生成临时 JSONL；
+覆盖记录种子成员展开、方法成员、路径及关闭方法边，源文件逐文件 hash 不变。
 
 配对查询也能走到它：
 
