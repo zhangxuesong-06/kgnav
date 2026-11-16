@@ -14,6 +14,9 @@ data/tags.draft.json
 # 方法词表：适配器输入，kgnav 不维护它（避免和记忆插件的 aliases 漂移）
 data/methods.json
 
+# 本地 harness 工作报告
+/kgnav-handoff.md
+
 # 临时输出
 *.log
 out.txt
