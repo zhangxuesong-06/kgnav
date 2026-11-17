@@ -53,6 +53,7 @@ class Graph:
     texts: dict[str, str] = field(default_factory=dict)  # 检索用全文，显示仍用 title
     why: dict[tuple[str, str], tuple[int | None, str, str, tuple[str, str], bool]] = field(default_factory=dict)
     turns: dict[str, set[str]] = field(default_factory=dict)  # 节点属于哪几轮
+    meta: dict = field(default_factory=dict)  # 图 JSON 顶层的其他字段（如 methods_skipped）
 
     def title(self, node: str) -> str:
         return self.titles.get(node, node)
@@ -106,6 +107,15 @@ def _derived_edges(nodes: list[dict]) -> list[Edge]:
     return out
 
 
+def graph_file(name: str | Path) -> Path:
+    """把 --graph 的值解析成文件：先按给定路径找，再回落到仓库 data/ 下。
+
+    cli.py 和 tags.py 共用，免得两处各写一份"data/ 前缀"逻辑再各错一次。
+    """
+    p = Path(name).expanduser()
+    return p if p.is_file() else Path(__file__).parent / "data" / name
+
+
 def load(path: str | Path) -> Graph:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     titles = {n["id"]: n["title"] for n in raw["nodes"]}
@@ -129,6 +139,9 @@ def load(path: str | Path) -> Graph:
 
     g = Graph(titles, unique, texts)
     g.turns = {n["id"]: set(n.get("turns") or []) for n in raw["nodes"]}
+    g.meta = {k: v for k, v in raw.items() if k not in ("nodes", "links")}
+    if not isinstance(g.meta.get("methods_skipped"), dict):  # 手改过的图不该让 CLI 崩
+        g.meta["methods_skipped"] = {}
     for e in unique:  # 同一对节点只留最有把握那条边的证据，和路线选择的口径一致
         key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
         old = g.why.get(key)

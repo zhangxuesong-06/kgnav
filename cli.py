@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from graph import CN, EDGE_KINDS, Graph, load
+from graph import CN, EDGE_KINDS, Graph, graph_file, load
 from nav import Bidirectional, GROUPS, Navigator, concept_members, cut_kinds, dead_end, neighbors
 from querylog import log_query
 
@@ -93,7 +93,11 @@ def _show_method(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)
         n for n in g.titles if g.title(n).startswith("方法：") and name in g.title(n)
     ]
     if not cands:
-        print(f"没有这个方法：{name}。先看有哪些：python cli.py --methods")
+        why = (g.meta.get("methods_skipped") or {}).get(name)
+        if why:
+            print(f"没有这个方法：{name}。导出时跳过了它：{why}")
+        else:
+            print(f"没有这个方法：{name}。先看有哪些：python cli.py --methods")
         return 2
     if len(cands) > 1:
         print(f"《{name}》命中了 {len(cands)} 个方法，说清楚点：")
@@ -115,15 +119,30 @@ def _show_method(g: Graph, name: str, kinds: tuple[str, ...] = tuple(EDGE_KINDS)
     return 0
 
 
-def _list_methods(g: Graph) -> int:
+def _list_methods(g: Graph, kinds: tuple[str, ...] = tuple(EDGE_KINDS)) -> int:
+    if "method" not in kinds:
+        print("方法边被开关关掉了（--no-method），先打开再看。")
+        return 0
     hubs = [n for n in g.titles if g.title(n).startswith("方法：")]
+    skipped = g.meta.get("methods_skipped") or {}
     if not hubs:
         print("图里还没有方法枢纽。检查 data/methods.json 后重新导出。")
+        _print_skipped(skipped)
         return 0
     for h in sorted(hubs, key=g.title):
         n = sum(1 for e in g.edges if h in (e.src, e.dst) and e.kind == "method")
         print(f"  {g.title(h)[3:]:<12}{n} 条记录")
+    _print_skipped(skipped)
     return 0
+
+
+def _print_skipped(skipped: dict[str, str]) -> None:
+    """导出时没建枢纽的方法要在这里说清，否则 --methods 少了谁没人知道。"""
+    if not skipped:
+        return
+    print(f"\n另有 {len(skipped)} 个方法在导出时被跳过：")
+    for name, why in list(skipped.items())[:8]:
+        print(f"  {name}：{why}")
 
 
 def _render_about(g: Graph, nb: dict, limit: int = 8, seed: str | None = None) -> list[str]:
@@ -239,9 +258,17 @@ def main() -> int:
         "source": a.no_source,
     }
     kinds = tuple(k for k in EDGE_KINDS if not off.get(k, False))
-    g = load(HERE / "data" / a.graph)
+    gp = graph_file(a.graph)
+    if not gp.is_file():
+        print(f"没有这张图：{a.graph}")
+        avail = sorted(p.name for p in (HERE / "data").glob("*.json"))
+        if avail:
+            print("data/ 里现有的：" + "、".join(avail))
+        print("生成真实图：python from_memory.py --mem-home <目录>")
+        return 2
+    g = load(gp)
     if a.methods:
-        return _list_methods(g)
+        return _list_methods(g, kinds)
     if a.method:
         return _show_method(g, a.method, kinds)
     if a.about:
@@ -256,6 +283,10 @@ def main() -> int:
         print("  python cli.py <src> <dst>           # 看这两条怎么连上的")
         print("  python cli.py --methods / --method <名字>")
         return 2
+    if a.k < 1:
+        # 只在配对查询里校验：--about / --methods 用不到 k，别拿它挡路
+        print("-k 至少是 1：0 条候选没有意义。")
+        return 2
     src, hit_s = g.resolve(a.src)
     dst, hit_d = g.resolve(a.dst)
     if not src or not dst:
@@ -266,7 +297,7 @@ def main() -> int:
         return 0
     default = not any(off.values())
     paths = run(g, src, dst, kinds, a.k, a.why, not a.no_review)
-    if not a.no_log and not log_query(LOG, Path(a.graph).name, src, dst, paths, default=default):
+    if not a.no_log and not log_query(LOG, gp.name, src, dst, paths, default=default):
         print("（提示：查询日志没写进去，共现边不会增长——看看 data/ 的权限。）", file=sys.stderr)
     return 0
 

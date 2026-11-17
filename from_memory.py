@@ -35,7 +35,44 @@ from querylog import read_queries
 HERE = Path(__file__).parent
 DEFAULT_OUT = HERE / "data" / "mem_graph.json"
 
-REF = re.compile(r"#(\d+)")
+# 只认独立的 #N：前面不能贴着字母/数字/下划线/&/斜杠（挡掉 abc#123、&#123、URL 片段），
+# 后面不能贴着 ASCII 字母/数字/下划线（挡掉 #123abc）；中文紧跟（#123这轮）仍算引用。
+REF = re.compile(r"(?<![A-Za-z0-9_&#/])#(\d+)(?![A-Za-z0-9_])")
+FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+class ConfigError(Exception):
+    """标签/方法词表文件存在但读不出来。静默当空会让「文件写坏了」看起来像「没有配置」。"""
+
+
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """围栏代码块 [start, end) 区间。里面的 #N 是代码或注释，不是"提到了这条记录"。"""
+    spans: list[tuple[int, int]] = []
+    start = None
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        if FENCE.match(line):
+            if start is None:
+                start = pos
+            else:
+                spans.append((start, pos + len(line)))
+                start = None
+        pos += len(line)
+    if start is not None:
+        spans.append((start, len(text)))
+    return spans
+
+
+def iter_refs(text: str):
+    """正文里的 #N 引用，跳过围栏代码块里那些。"""
+    spans = _code_spans(text)
+    i = 0
+    for m in REF.finditer(text):
+        while i < len(spans) and spans[i][1] <= m.start():
+            i += 1
+        if i < len(spans) and spans[i][0] <= m.start() < spans[i][1]:
+            continue
+        yield m
 
 
 def _sha1(s: str) -> str:
@@ -127,24 +164,52 @@ resolve_tag_key = _resolve_key  # 给 tags.py 用
 
 
 def read_methods(path: Path) -> dict[str, list[str]]:
-    """读方法词表：{方法名: [别名/写法, ...]}。文件不存在/坏了就当没有。"""
+    """读方法词表：{方法名: [别名/写法, ...]}。不存在就当没有；存在但坏了报 ConfigError。"""
     return read_tags(path)  # 结构完全一样，复用同一套校验
 
 
 def read_tags(path: Path) -> dict[str, list[str]]:
-    """读手工标签文件：{标签: [节点键, ...]}。文件不存在/坏了就当没有标签，不连累导出。"""
+    """读手工标签文件：{标签: [节点键, ...]}。
+
+    文件不存在 → 空表（标签本来就可以不写）；存在但读不出来 → 报错。
+    否则一次手滑改坏 JSON，导出会安静地丢掉全部标签和全部方法。
+    """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = path.read_text(encoding="utf-8-sig")  # 记事本存的 UTF-8 BOM 不该被当成坏文件
+    except FileNotFoundError:
         return {}
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"{path} 不是 UTF-8 编码（第 {e.start} 字节）：另存为 UTF-8 再试") from e
+    except OSError as e:
+        raise ConfigError(f"{path} 读不了：{e}") from e
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{path} 不是合法 JSON（第 {e.lineno} 行第 {e.colno} 列）：{e.msg}") from e
     if not isinstance(raw, dict):
-        return {}
+        raise ConfigError(f"{path} 顶层应是对象 {{名称: [...]}}，实际是 {type(raw).__name__}")
     out: dict[str, list[str]] = {}
     for tag, keys in raw.items():
-        if str(tag).startswith("_") or not isinstance(keys, list):
+        if str(tag).startswith("_"):
             continue
+        if not isinstance(keys, list):
+            raise ConfigError(f"{path} 里「{tag}」的值应是列表，实际是 {type(keys).__name__}")
         out[str(tag)] = [k for k in keys if isinstance(k, str) and k.strip()]
     return out
+
+
+_ASCII_ONLY = re.compile(r"\A[\x00-\x7f]+\Z")
+
+
+def _alias_pattern(term: str) -> re.Pattern[str]:
+    """英文/符号别名按词边界匹配：storage 里的 rag 不是"提到 RAG"。
+
+    中文没有空格分词，词边界会把正常写法挡掉，所以含非 ASCII 的别名仍用子串。
+    """
+    body = re.escape(term)
+    if _ASCII_ONLY.match(term):
+        return re.compile(r"(?<![A-Za-z0-9_])" + body + r"(?![A-Za-z0-9_])")
+    return re.compile(body)
 
 
 def build(
@@ -204,7 +269,7 @@ def build(
 
     # 3) 边。每条边都带证据：哪条记录（#N）+ 那句原话，方便回 L0 核对。
     edges: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: dict[tuple[str, str, str], dict] = {}  # 方向无关的键 → 已存下的那条边
     # 轮次摘录的行首结构位才是真引用："产物 #1595：路径"、"助手摘录 #1593：…"。
     # 摘录正文里出现的 #N 是"引用之引用"——那段话本身在讨论别的记录，不该算这条边。
     STRUCT_LABELS = {"产物", "助手摘录", "来源", "请求"}
@@ -214,27 +279,25 @@ def build(
     ) -> bool:
         if a == b:
             return False
-        k = (a, b, kind)
-        kr = (b, a, kind)
-        if k in seen or kr in seen:
+        key = (a, b, kind) if a <= b else (b, a, kind)
+        old = seen.get(key)
+        if old is not None:
             if review is False:  # 同一对边只要有一条不是回顾型的，就不该被标成回顾型
-                for e in edges:
-                    if (e["from"], e["to"], e["kind"]) in (k, kr):
-                        e["review"] = False
-                        e["n"], e["quote"] = n, quote  # 证据也换成结构位那条
-                        break
+                old["review"], old["n"], old["quote"] = False, n, quote
             return False
-        seen.add(k)
-        edges.append(
-            {"from": a, "to": b, "kind": kind, "n": n, "quote": quote, "review": review}
-        )
+        edge = {"from": a, "to": b, "kind": kind, "n": n, "quote": quote, "review": review}
+        seen[key] = edge
+        edges.append(edge)
         return True
 
+    refs_in_code = 0
     for r in recs:
         src = rec2node[r["n"]]
         text = r.get("text") or ""
         is_ep = r.get("kind") == "episode"
-        for m in REF.finditer(text):
+        refs = list(iter_refs(text))
+        refs_in_code += len(REF.findall(text)) - len(refs)
+        for m in refs:
             tgt_n = int(m.group(1))
             tgt = rec2node.get(tgt_n)
             if tgt is None:
@@ -334,19 +397,28 @@ def build(
     #     这就是"举一反三"：同一个方法在不同项目、不同时间的记录，都接到同一个枢纽上。
     #     枢纽没有轮次归属，所以路径会说"判不出是不是同一轮"——这是对的，它跨时间。
     method_hubs = method_edges = 0
+    method_skipped: dict[str, str] = {}  # 方法名 → 为什么没建枢纽（静默跳过等于骗人）
     if methods:
         for name, terms in methods.items():
             keys = [t.strip().lower() for t in terms if isinstance(t, str) and t.strip()]
             if not keys:
+                method_skipped[str(name)] = "没有可用别名"
                 continue
+            pats = [(t, _alias_pattern(t)) for t in keys]
             member: dict[str, str] = {}
             for r in recs:
                 txt = (r.get("text") or "").lower()
-                hit = next((t for t in keys if t in txt), None)
+                hit = next((t for t, p in pats if p.search(txt)), None)
                 if hit:
                     member.setdefault(rec2node[r["n"]], hit)
-            if not member or len(member) > MAX_METHOD_NODES:
-                continue  # 太通用就跳过：一个方法挂满全库，等于没有方法
+            if not member:
+                method_skipped[str(name)] = "没有记录提到"
+                continue
+            if len(member) > MAX_METHOD_NODES:
+                method_skipped[str(name)] = (
+                    f"命中 {len(member)} 条，超过上限 {MAX_METHOD_NODES}，会变成大团块"
+                )
+                continue
             hub = "m" + _sha1(name)[:7]
             nodes[hub] = {
                 "id": hub,
@@ -426,6 +498,8 @@ def build(
         "_说明": "由 from_memory.py 只读抽取，勿手改。重新生成会覆盖。",
         "nodes": list(nodes.values()),
         "links": edges,
+        # 被跳过的方法留在图上，CLI 才能说清"为什么 --methods 里没有它"
+        "methods_skipped": method_skipped,
     }
     base = health(nodes, edges)
     no_rev = health(nodes, [e for e in edges if not e.get("review")])
@@ -447,6 +521,8 @@ def build(
         "tag_edges": tag_edges,
         "method_hubs": method_hubs,
         "method_edges": method_edges,
+        "method_skipped": method_skipped,
+        "refs_in_code": refs_in_code,
         "isolated": base["isolated"],
         "biggest": base["biggest"],
         "isolated_no_review": no_rev["isolated"],
@@ -513,8 +589,12 @@ def main(argv: list[str] | None = None) -> int:
     before = verify_source(mem)
     recs = read_records(mem)
     queries = read_queries(Path(a.queries))
-    tag_map = read_tags(Path(a.tags))
-    methods = read_methods(Path(a.methods))
+    try:
+        tag_map = read_tags(Path(a.tags))
+        methods = read_methods(Path(a.methods))
+    except ConfigError as e:
+        print(f"配置读不了，先修好再导出：{e}")
+        return 2
     graph, stats = build(
         recs,
         use_window=not a.no_window,
@@ -530,6 +610,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"源：{mem}")
     print(f"记录 {stats['records']} → 节点 {stats['nodes']}（合并掉 {stats['collapsed']} 份重复/多版本）")
     print("边：" + "、".join(f"{k} {v}" for k, v in stats["edges"].items()))
+    if stats["refs_in_code"]:
+        print(f"  代码块里另有 {stats['refs_in_code']} 处 #号引用，未当作引用")
     print(f"外挂信号：同会话链 {stats['session_edges']} 条，共现 {stats['cooccur_edges']} 条（来自 {len(queries)} 次查询）")
     print(
         f"手工标签：命中 {stats['tags_applied']} 个键"
@@ -538,6 +620,10 @@ def main(argv: list[str] | None = None) -> int:
         f"、将派生 {stats['tag_edges']} 条同标签边"
     )
     print(f"方法索引：{stats['method_hubs']} 个方法枢纽，{stats['method_edges']} 条「同方法」边")
+    if stats["method_skipped"]:
+        items = list(stats["method_skipped"].items())
+        head = f"跳过 {len(items)} 个方法" if len(items) > 5 else "跳过的方法"
+        print(f"  {head}：" + "；".join(f"{k}（{v}）" for k, v in items[:5]) + ("…" if len(items) > 5 else ""))
     print(
         f"归属：turnID 对上 {stats['exact']}"
         f"、seq 窗口补 {stats['window']}"

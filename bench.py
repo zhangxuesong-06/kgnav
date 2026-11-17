@@ -17,7 +17,7 @@ import json
 import time
 from pathlib import Path
 
-from graph import load
+from graph import graph_file, load
 from nav import Bidirectional, Navigator
 
 HERE = Path(__file__).parent
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
 
     batches = json.loads(Path(a.queries).read_text(encoding="utf-8"))
     for gname, pairs in batches.items():
-        path = HERE / "data" / gname
+        path = graph_file(gname)
         if not path.exists():
             print(f"\n== {gname}：没有这张图，跳过（先跑 from_memory.py 生成）")
             continue

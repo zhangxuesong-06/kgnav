@@ -135,8 +135,24 @@ def check_invariants(g, pairs) -> int:
     return bad
 
 
+def check_guards() -> int:
+    """k 小于 1 必须当场拒绝；否则 route 返回空，dead_end 会把 bug 说成数据问题。"""
+    bad = 0
+    ks = (0, -1)
+    for k in ks:
+        try:
+            Navigator(k=k)
+        except ValueError:
+            pass
+        else:
+            bad += 1
+            print(f"  ✗ Navigator(k={k}) 应该报错")
+    print(f"参数护栏：{len(ks)} 组，{bad} 处不对")
+    return bad
+
+
 def main() -> int:
-    bad = check_notes()
+    bad = check_notes() + check_guards()
 
     fake = load(HERE / "data" / "fake_graph.json")
     pairs = list(itertools.permutations(list(fake.titles), 2))

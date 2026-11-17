@@ -255,6 +255,145 @@ def test_method_skips_oversized() -> int:
     return bad
 
 
+def test_method_alias_word_boundary() -> int:
+    """英文别名必须按词匹配：storage 里的 rag 不是"提到 RAG"；中文仍是子串。"""
+    bad = 0
+    recs = [
+        message(1, "s1", "t1", "我们讨论 storage 方案"),
+        message(2, "s2", "t2", "这次用 RAG 检索"),
+        message(3, "s3", "t3", "再试一次 rag"),
+        message(4, "s4", "t4", "idempotent 写入，失败了再重试"),
+    ]
+    g, stats = build(
+        recs, use_window=False, methods={"RAG": ["rag"], "幂等": ["idempotent"]}
+    )
+    members = {e["from"] for e in g["links"] if e["kind"] == "method"}
+    if "r1" in members:
+        bad += 1
+        print("  ✗ storage 里的 rag 被当成提到 RAG 了")
+    if {"r2", "r3", "r4"} - members:
+        bad += 1
+        print(f"  ✗ 独立单词的别名应该命中：{members}")
+    if stats["method_edges"] != 3:
+        bad += 1
+        print(f"  ✗ 应有 3 条方法边，实际 {stats['method_edges']}")
+    # 中文别名不受词边界影响
+    g2, _ = build(
+        [message(1, "s1", "t1", "这次要手眼标定一下")],
+        use_window=False,
+        methods={"手眼标定": ["手眼标定"]},
+    )
+    if not any(e["kind"] == "method" for e in g2["links"]):
+        bad += 1
+        print("  ✗ 中文子串匹配被误伤")
+    print(f"方法别名边界：{'通过' if not bad else '失败'}")
+    return bad
+
+
+def test_ref_boundaries() -> int:
+    """#N 只认独立引用：abc#1、#1abc、URL 片段、围栏代码块里的都不算。"""
+    bad = 0
+    recs = [
+        message(1, "s1", "t1", "第一条，什么都不提"),
+        message(2, "s2", "t2", "见 #1 这条"),
+        message(3, "s3", "t3", "abc#1 不是引用"),
+        message(4, "s4", "t4", "#1abc 也不是"),
+        message(5, "s5", "t5", "http://x/#1 不是引用"),
+        message(6, "s6", "t6", "```\n#1 代码块里\n```\n正文没有引用"),
+        message(7, "s7", "t7", "中文紧贴 #1这轮 应该算"),
+    ]
+    g, stats = build(recs, use_window=False)
+    got = {(e["from"], e["to"]) for e in g["links"] if e["kind"] == "link"}
+    want = {("r2", "r1"), ("r7", "r1")}
+    if got != want:
+        bad += 1
+        print(f"  ✗ 引用边应是 {want}，实际 {got}")
+    if stats.get("refs_in_code") != 1:
+        bad += 1
+        print(f"  ✗ 应报出代码块里跳过 1 处引用，实际 {stats.get('refs_in_code')}")
+    print(f"#号引用边界：{'通过' if not bad else '失败'}")
+    return bad
+
+
+def test_config_error() -> int:
+    """标签/方法文件坏了必须报错，不能静默当空——否则"词表写坏"看起来像"没有词表"。"""
+    bad = 0
+    from from_memory import ConfigError, read_methods, read_tags
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        cases = [
+            ("坏 JSON", "{ 坏", "JSON"),
+            ("顶层不是对象", "[1, 2]", "对象"),
+            ("值不是列表", '{"X": "r1"}', "列表"),
+        ]
+        for label, text, want in cases:
+            p = d / "bad.json"
+            p.write_text(text, encoding="utf-8")
+            for reader in (read_tags, read_methods):
+                try:
+                    reader(p)
+                except ConfigError as e:
+                    if want not in str(e):
+                        bad += 1
+                        print(f"  ✗ {label}：错误信息没说清原因：{e}")
+                else:
+                    bad += 1
+                    print(f"  ✗ {label}：{reader.__name__} 静默通过了")
+        if read_tags(d / "不存在.json") != {}:
+            bad += 1
+            print("  ✗ 文件不存在时应返回空表（可选配置）")
+        gbk = d / "gbk.json"
+        gbk.write_bytes("不是UTF8".encode("gbk"))
+        try:
+            read_tags(gbk)
+        except ConfigError as e:
+            if "UTF-8" not in str(e):
+                bad += 1
+                print(f"  ✗ 非 UTF-8 文件应提示编码问题：{e}")
+        else:
+            bad += 1
+            print("  ✗ 非 UTF-8 文件静默通过了")
+        bom = d / "bom.json"
+        bom.write_bytes('{"X": ["r1"]}'.encode("utf-8-sig"))  # 记事本常见的带 BOM 写法
+        if read_tags(bom) != {"X": ["r1"]}:
+            bad += 1
+            print("  ✗ 带 UTF-8 BOM 的合法文件被挡住了")
+        ok = d / "ok.json"
+        ok.write_text('{"_注释": "x", "X": ["r1", ""]}', encoding="utf-8")
+        if read_tags(ok) != {"X": ["r1"]}:
+            bad += 1
+            print(f"  ✗ 正常文件解析不对：{read_tags(ok)}")
+    print(f"配置文件错误：{'通过' if not bad else '失败'}")
+    return bad
+
+
+def test_method_skipped_reported() -> int:
+    """被跳过的方法要说清原因，写进 stats 和图的顶层，别只留一个 0。"""
+    bad = 0
+    recs = [message(i, f"s{i}", f"t{i}", f"都在讲同一个通用词{i}") for i in range(1, 46)]
+    g, stats = build(
+        recs,
+        use_window=False,
+        methods={"通用词": ["通用词"], "空方法": [], "没有命中": ["zzz"]},
+    )
+    skip = stats.get("method_skipped") or {}
+    if "通用词" not in skip or "40" not in skip["通用词"]:
+        bad += 1
+        print(f"  ✗ 超上限的方法应报出命中数和上限：{skip}")
+    if "空方法" not in skip:
+        bad += 1
+        print(f"  ✗ 没有别名的方法应报出原因：{skip}")
+    if "没有命中" not in skip:
+        bad += 1
+        print(f"  ✗ 没有命中记录的方法应报出原因：{skip}")
+    if (g.get("methods_skipped") or {}) != skip:
+        bad += 1
+        print(f"  ✗ 跳过原因没写进图的顶层：{g.get('methods_skipped')}")
+    print(f"方法跳过上报：{'通过' if not bad else '失败'}")
+    return bad
+
+
 def test_log_roundtrip() -> int:
     """CLI 写的日志必须能被导出器原样读回来。"""
     from querylog import log_query, read_queries
@@ -298,6 +437,10 @@ def main() -> int:
         test_tags_block_cooccur,
         test_method_hub,
         test_method_skips_oversized,
+        test_method_alias_word_boundary,
+        test_ref_boundaries,
+        test_config_error,
+        test_method_skipped_reported,
         test_log_roundtrip,
     ):
         bad += fn()

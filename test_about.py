@@ -203,8 +203,46 @@ def check_concept_members() -> int:
     return bad
 
 
+def check_list_methods_switch() -> int:
+    """--methods 也要尊重 --no-method，且把导出时被跳过的方法说出来。"""
+    bad = 0
+    import contextlib
+    import io
+
+    from cli import _list_methods
+    from graph import EDGE_KINDS
+
+    g = make()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _list_methods(g, tuple(k for k in EDGE_KINDS if k != "method"))
+    if rc != 0 or "--no-method" not in buf.getvalue():
+        bad += 1
+        print(f"  ✗ 关掉方法边时应提示，而不是照常列出：{buf.getvalue()!r}")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _list_methods(g, tuple(EDGE_KINDS))
+    text = buf.getvalue()
+    if "X" not in text or "条记录" not in text:
+        bad += 1
+        print(f"  ✗ 打开时没列出方法枢纽：{text!r}")
+
+    g.meta = {"methods_skipped": {"大方法": "命中 45 条，超过上限 40，会变成大团块"}}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _list_methods(g, tuple(EDGE_KINDS))
+    text = buf.getvalue()
+    if "大方法" not in text or "45" not in text:
+        bad += 1
+        print(f"  ✗ 没把导出时跳过的方法说出来：{text!r}")
+    print(f"方法列表开关：{'通过' if not bad else '失败'}")
+    return bad
+
+
 def main() -> int:
     bad = check() + check_render() + check_concept_expand() + check_concept_members()
+    bad += check_list_methods_switch()
     print("全部通过" if not bad else f"**{bad} 处失败**")
     return 1 if bad else 0
 

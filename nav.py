@@ -35,6 +35,8 @@ class Navigator:
         penalty: float = 5.0,
         review: bool = True,
     ) -> None:
+        if k < 1:
+            raise ValueError("k 至少是 1：要几条候选就写几，0 条没有意义")
         self.kinds = tuple(kinds)
         self.k = k
         self.penalty = penalty  # 已用过的边涨价，逼出第二条、第三条不同的走法
@@ -44,6 +46,8 @@ class Navigator:
     # ---- 主入口 -------------------------------------------------------
     def route(self, g: Graph, src: str, dst: str, k: int | None = None) -> list[Path]:
         k = self.k if k is None else k
+        if k < 1:
+            raise ValueError("k 至少是 1：要几条候选就写几，0 条没有意义")
         adj = self._adjacency(g)
         penalty: dict[tuple[str, str, str], float] = {}
         out: list[Path] = []
@@ -347,7 +351,8 @@ def dead_end(g: Graph, src: str, dst: str, kinds: tuple[str, ...], review: bool 
         return f"此路不通。目标节点是孤立点：{b_iso}。"
     reach = _bfs(adj, src)
     if dst in reach:
-        return "此路不通。可两端其实是连着的——这是搜索本身的问题，不是数据问题，记一笔。"
+        # k>=1 时不该走到这里：走得到就说明搜索本身有 bug，别再把它说成数据问题
+        raise AssertionError("两端连通但没找到路径：这是搜索的问题，不是数据问题")
     other = _bfs(adj, dst)
     return (
         f"此路不通。两端都有边，但分属两个连通块（{len(reach)} 个节点 / {len(other)} 个节点）。"

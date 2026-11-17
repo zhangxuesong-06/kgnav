@@ -12,8 +12,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from from_memory import read_tags, resolve_tag_key
-from graph import load
+from from_memory import ConfigError, read_tags, resolve_tag_key
+from graph import graph_file, load
 
 HERE = Path(__file__).parent
 
@@ -33,9 +33,13 @@ def main(argv: list[str] | None = None) -> int:
         print("  Copy-Item data\\tags.example.json data\\tags.json")
         return 2
 
-    g = load(HERE / "data" / a.graph)
+    g = load(graph_file(a.graph))
     nodes = {nid: {"title": t} for nid, t in g.titles.items()}
-    raw = read_tags(tags_path)
+    try:
+        raw = read_tags(tags_path)
+    except ConfigError as e:
+        print(f"标签文件读不了：{e}")
+        return 2
 
     unknown: list[tuple[str, str]] = []
     by_tag: dict[str, list[tuple[str, str]]] = {}
