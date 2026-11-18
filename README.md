@@ -115,6 +115,31 @@ python cli.py --graph 你的图.json ...          # 换一张图（也接受 dat
 
 这里**没有 A\***，不是忘了：A\* 需要一个可采纳的启发式，而唯一的候选（"语义距离"）根本不存在，没有 embedding。拿 h=0 冒充 A*，跑出来和 Dijkstra 逐字节相同，那只是给同一件事换个名字。
 
+## 评测基线：调参前先冻结
+
+`eval.json` 是一批固定用例，`python eval.py` 把它们跑成一张可比的表：每条路径的跳数、confidence、最弱一环、解释口径，以及 8 个开关各自把它改成了什么。
+
+```bash
+python eval.py                          # 公开假图用例
+python eval.py --real                   # 加上 eval.local.json 里的本机真实图用例
+python eval.py --save eval/2026-11-18.json
+python eval.py --compare eval/旧.json eval/新.json
+```
+
+同一张图跑两次，快照逐字一致（`python test_eval.py` 会验）。真实图用例放 `eval.local.json`（已 gitignore），模板见 `eval.local.example.json`。**改用例等于换基线**——调参时别顺手改，否则数字变好也说不清是改了代码还是改了考题。
+
+输出长这样（假图）：
+
+```
+== fake_graph.json（12 节点 / 44 边）
+路径 · 4 条
+用例                            默认      变化
+有损压缩记忆 → 机器人定位导航   3跳 0.70  关显式链接→2跳 0.35；关同来源→3跳 0.70；关同标签→5跳 0.85
+有损压缩记忆 → 语义近邻边       1跳 0.35  关语义近邻→3跳 0.85
+```
+
+「变化」列就是消融实验：每个 `--no-*` 单独关一次，和默认不同才写出来。想知道一条路径靠哪类边撑着，不用再手工跑八遍。
+
 ## 接自己的数据
 
 图就是一个 JSON：`nodes` + `links`。手写即可，见 `data/fake_graph.json`。核心（`graph.py` / `nav.py` / `cli.py`）只认这个格式，不认识任何具体的记忆存储。
@@ -251,6 +276,9 @@ node agent-memory/test-kgnav.mjs --kgnav <kgnav源码目录>
 | `cli.py` | 输入到可读输出，`run()` 14 行 |
 | `querylog.py` | 查询日志：只写本地、坏行跳过，共现边的原料 |
 | `bench.py` | 同一批查询两个算法对照，`queries.json` 是那批查询 |
+| `eval.py` | 冻结评测基线：固定用例 × 全部开关，输出可比快照 |
+| `eval.json` | 公开假图用例；真实图用例在 `eval.local.json`（不入库） |
+| `test_eval.py` | 基线自身：两次一致、用例可解析、比较模式有效 |
 | `test_nav.py` | 全图跑对照：最短路代价一致、路径自洽、解释与事实一致 |
 | `test_build.py` | 导出器测试：会话链、共现、日志读写 |
 | `from_memory.py` | 从 opencode-mem 的 JSONL 只读抽图 |

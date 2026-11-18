@@ -648,6 +648,28 @@ $ python cli.py --concept 记忆插件
 - 已安装副本未更新；本次只改仓库源码。
 - `MAX_METHOD_NODES=40` 仍是硬编码；概念层加厚后可能要按图规模调，等有了基线再动。
 
+## Day 18：冻结评测基线（P1）
+
+调参之前先要有数字。之前 32 条路径全靠 `验收表.md` 手填，想比较一次改动要手工跑八遍开关，所以任何调整都说不清"变好了没有"。
+
+### 做了什么
+
+- `eval.json`：固定用例，4 条路径 + 4 个展开种子，全部用公开假图。
+- `eval.py`：每条用例跑默认 + 7 个 `--no-*` + `--no-review`，输出跳数 / confidence / 最弱一环 / 解释口径，以及每个开关把它改成了什么；`--save` 存快照，`--compare` 逐项比。
+- 真实图用例放 `eval.local.json`（已 gitignore），`--real` 才读；模板 `eval.local.example.json` 入库。用例来源是 `queries.json` 的 5 对和 `验收表.md` 的 5 个种子，不读真实图也能先冻结考题。
+- `test_nav.py` 默认只跑假图，`--real` 才碰 `data/mem_graph.json`——别的 harness 跑测试不会被动读到私人图。
+- `test_eval.py`：两次跑必须逐字一致、公开用例都能解析、比较模式能报出单条改动。
+
+### 验证
+
+- `python eval.py`：假图 4 条路径全通；展开 4 个种子、默认 23 条邻居；消融列把"关哪类边会变成几跳"直接列出来。
+- `--save` 后 `--compare` 自己：两个快照完全一样。
+- `python test_eval.py` 3 组全过；`test_build` 15 组、`test_about` 5 组、`test_nav` 默认（假图）全过。
+
+### 一个失误
+
+验证 `--real` 开关时误跑了一次 `python eval.py --real`，因此读取了本机 `data/mem_graph.json`。输出被 `head` 截断，没有使用任何真实数据，也没有记录任何真实图数字；真实图基线仍等授权后再跑。
+
 ## 还剩什么
 
 1. **620 条记录仍无归属**（`#1–#598` 占绝大多数）。修在采集侧，不在 kgnav。

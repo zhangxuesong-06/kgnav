@@ -14,6 +14,10 @@ data/tags.draft.json
 # 方法词表：适配器输入，kgnav 不维护它（避免和记忆插件的 aliases 漂移）
 data/methods.json
 
+# 评测基线：本机真实图用例与快照（含真实节点 id），只留本地
+eval.local.json
+/eval/
+
 # 本地 harness 工作报告
 /kgnav-handoff.md
 

@@ -1,6 +1,7 @@
 """两个算法必须给出同一条**代价**的最短路，而且返回的路径必须是合法的。
 
-不引 pytest，`python test_nav.py` 直接跑。图不存在就跳过那部分。
+不引 pytest，`python test_nav.py` 直接跑。默认只跑假图；加 `--real` 才读本机
+`data/mem_graph.json`（私人图，别的 harness 跑测试时不该被动碰到）。
 
 注意：同价的路径可能不止一条，两个算法的平局断法不同，节点序列会不一样。
 所以这里不要求"节点序列相同"，只要求：
@@ -11,6 +12,7 @@
 
 from __future__ import annotations
 
+import argparse
 import itertools
 import random
 import sys
@@ -151,7 +153,10 @@ def check_guards() -> int:
     return bad
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="两个算法的对照测试（默认只跑假图）")
+    ap.add_argument("--real", action="store_true", help="额外跑 data/mem_graph.json（本机私人图，默认不碰）")
+    a = ap.parse_args(argv)
     bad = check_notes() + check_guards()
 
     fake = load(HERE / "data" / "fake_graph.json")
@@ -160,7 +165,9 @@ def main() -> int:
     bad += check_invariants(fake, pairs)
 
     real = HERE / "data" / "mem_graph.json"
-    if real.exists():
+    if not a.real:
+        print("真实图部分跳过（加 --real 才跑；默认不碰本机私人图）")
+    elif real.exists():
         g = load(real)
         ids = sorted(g.titles)
         rng = random.Random(20261111)  # 固定种子：跑两次结果一样
