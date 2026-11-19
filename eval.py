@@ -85,6 +85,27 @@ def _weakest(p) -> str:
     return min(p.edges, key=lambda e: EDGE_KINDS[e[2]][1])[2]
 
 
+def _hops(g, p) -> list[dict]:
+    """逐跳记录关系类型、方向、原话和证据是否缺失——回溯要求靠这个判，不靠感觉。"""
+    out = []
+    for a, b, kind in p.edges:
+        n, quote, ekind, (src, _dst), review = g.why_of(a, b)
+        out.append(
+            {
+                "from": a,
+                "to": b,
+                "kind": kind,
+                "evidence_kind": ekind,
+                "n": n,
+                "quote": quote,
+                "reverse": bool(kind == "link" and ekind == "link" and src == b),
+                "review": bool(review),
+                "evidence_missing": not (n or quote),
+            }
+        )
+    return out
+
+
 def _path_row(g, desc: str, src_name: str, dst_name: str) -> dict:
     row: dict = {
         "label": f"{src_name} → {dst_name}",
@@ -118,6 +139,8 @@ def _path_row(g, desc: str, src_name: str, dst_name: str) -> dict:
                 "span": _span(p.note),
                 "candidates": len(paths),
             }
+            if vlabel == "默认":  # 逐跳只记默认视图；消融看跳数/连通性就够了
+                row["hops_detail"] = _hops(g, p)
         else:
             row["variants"][vlabel] = {
                 "status": "断",
@@ -137,13 +160,29 @@ def _about_row(g, desc: str, seed: str) -> dict:
     row["node"] = nid
     for vlabel, off, review in VARIANTS:
         nb = neighbors(g, nid, _kinds(off), review)
-        row["variants"][vlabel] = {group: len(nb[group]) for group in GROUPS}
+        # 存身份、关系类型和证据，不只存数量：同组换错人时数量不变，基线就瞎了
+        row["variants"][vlabel] = {
+            group: [
+                {
+                    "node": x.node,
+                    "title": g.title(x.node),
+                    "kind": x.kind,
+                    "direction": x.direction,
+                    "evidence": x.evidence,
+                    "n": x.n,
+                    "review": x.review,
+                }
+                for x in nb[group]
+            ]
+            for group in GROUPS
+        }
     return row
 
 
 def _summary(rows: list[dict], about: list[dict]) -> dict:
     default = [r["variants"]["默认"] for r in rows if r.get("variants")]
     found = [v for v in default if v["status"] == "通"]
+    about_default = [r["variants"]["默认"] for r in about if r.get("variants")]
     return {
         "paths": len(rows),
         "found": len(found),
@@ -153,8 +192,13 @@ def _summary(rows: list[dict], about: list[dict]) -> dict:
         "weakest": dict(Counter(v["weakest"] for v in found)),
         "span": dict(Counter(v["span"] for v in found)),
         "seeds": len(about),
-        "neighbors": sum(
-            sum(r["variants"]["默认"].values()) for r in about if r.get("variants")
+        "neighbors": sum(len(m) for v in about_default for m in v.values()),
+        # 旧边没有留下原话时，回溯要求就没满足；数字单列，不和"有证据"混在一起
+        "neighbors_without_evidence": sum(
+            1 for v in about_default for m in v.values() for x in m if not (x["n"] or x["evidence"])
+        ),
+        "hops_without_evidence": sum(
+            1 for r in rows for h in r.get("hops_detail", []) if h["evidence_missing"]
         ),
     }
 
@@ -206,8 +250,8 @@ def _cell(v: dict) -> str:
     return f"{v['hops']}跳 {v['confidence']:.2f}{tail}"
 
 
-def _about_cell(counts: dict) -> str:
-    return "/".join(str(counts[group]) for group in GROUPS)
+def _about_cell(members: dict) -> str:
+    return "/".join(str(len(members[group])) for group in GROUPS)
 
 
 def _path_cells(rows: list[dict]) -> list[tuple[str, str, str]]:
@@ -280,6 +324,10 @@ def render(snap: dict) -> str:
                 )
             if s["span"]:
                 parts.append("口径 " + "、".join(f"{k}:{v}" for k, v in sorted(s["span"].items())))
+            if s["hops_without_evidence"]:
+                parts.append(f"逐跳证据缺 {s['hops_without_evidence']} 处")
+            if s["neighbors_without_evidence"]:
+                parts.append(f"邻居证据缺 {s['neighbors_without_evidence']} 条")
             lines.append("汇总：" + "；".join(parts))
         if g["about"]:
             lines.append("")
