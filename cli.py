@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from graph import CN, EDGE_KINDS, Graph, graph_file, load
+from graph import CN, EDGE_KINDS, Edge, Graph, graph_file, load
 from nav import Bidirectional, GROUPS, Navigator, concept_members, cut_kinds, dead_end, neighbors
 from querylog import log_query
 
@@ -47,24 +47,26 @@ def run(
 
 def _chain(g: Graph, p, why: bool = False) -> str:
     parts = [f"《{g.title(p.nodes[0])}》"]
-    for a, b, kind in p.edges:
+    for dst, edge in zip(p.nodes[1:], p.hop_edges):
         # (逆)：那句话其实在 B 里，是 B 提到了 A，不是 A 指向 B。
         # 后来的记录提到先前的记录，常只是在讨论，不是真关系——标出来让人自己判。
-        back = "(逆)" if kind == "link" and g.why_of(a, b)[3][0] == b else ""
-        parts.append(f" ─{CN[kind]}{back}→ 《{g.title(b)}》")
+        back = "(逆)" if edge.kind == "link" and edge.src == dst else ""
+        parts.append(f" ─{CN[edge.kind]}{back}→ 《{g.title(dst)}》")
     line = "".join(parts)
     if why:
-        line += "\n" + "\n".join("   证据 " + _ev(g, a, b) for a, b, _k in p.edges)
+        line += "\n" + "\n".join(
+            "   证据 " + _ev(edge, dst) for dst, edge in zip(p.nodes[1:], p.hop_edges)
+        )
     return line
 
 
-def _ev(g: Graph, a: str, b: str) -> str:
-    n, quote, _kind, (src, _dst), _rev = g.why_of(a, b)
-    back = " ←反向" if n and src == b else ""  # 证据是 b 指向 a 的那句话，不是顺着走的方向
-    if n:
-        return f"#{n}{back}「{quote}」"
-    if quote:  # 会话链、共现这类没有记录号的边，证据就是那句话本身
-        return f"「{quote}」"
+def _ev(edge: Edge, dst: str) -> str:
+    back = " ←反向" if edge.kind == "link" and edge.src == dst else ""
+    if edge.n:
+        quote = f"「{edge.quote}」" if edge.quote else ""
+        return f"#{edge.n}{back}{quote}"
+    if edge.quote:
+        return f"{back}「{edge.quote}」"
     return "—（这条边没有留下证据）"
 
 
@@ -295,7 +297,7 @@ def main() -> int:
     if src == dst:
         print(f"同一个节点：《{g.title(src)}》，用不着找路。")
         return 0
-    default = not any(off.values())
+    default = not (a.no_review or any(off.values()))
     paths = run(g, src, dst, kinds, a.k, a.why, not a.no_review)
     if not a.no_log and not log_query(LOG, gp.name, src, dst, paths, default=default):
         print("（提示：查询日志没写进去，共现边不会增长——看看 data/ 的权限。）", file=sys.stderr)

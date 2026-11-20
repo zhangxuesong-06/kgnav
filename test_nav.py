@@ -13,9 +13,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import itertools
+import json
 import random
 import sys
+import tempfile
 from pathlib import Path
 
 from graph import EDGE_KINDS, load
@@ -116,7 +120,7 @@ def check_invariants(g, pairs) -> int:
                 if "判不出" in p.note and not (missing and attributed):
                     problems.append("说判不出但不是缺归属")
                 if "全靠回顾" in p.note and not all(
-                    k == "link" and g.why_of(a, b)[4] for a, b, k in p.edges
+                    edge.kind == "link" and edge.review for edge in p.hop_edges
                 ):
                     problems.append("宣称全靠回顾但有些边不是")
                 if "None" in p.note or "；；" in p.note or "。。" in p.note:
@@ -153,11 +157,68 @@ def check_guards() -> int:
     return bad
 
 
+def check_selected_evidence() -> int:
+    from cli import run
+    from eval import _hops
+
+    raw = {
+        "nodes": [{"id": "a", "title": "甲"}, {"id": "b", "title": "乙"}],
+        "links": [
+            {"from": "b", "to": "a", "kind": "link", "n": 1, "quote": "回顾原话", "review": True},
+            {"from": "a", "to": "b", "kind": "link", "n": 2, "quote": "同期原话"},
+            {"from": "a", "to": "b", "kind": "source", "n": 3, "quote": "同源依据"},
+        ],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "graph.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        graph = load(path)
+    bad = 0
+    for chosen, review, number, quote in (
+        (("source",), True, 3, "同源依据"),
+        (("link",), False, 2, "同期原话"),
+    ):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            path = run(graph, "a", "b", chosen, 1, why=True, review=review)[0]
+        hop = _hops(path)[0]
+        if (hop["evidence_kind"], hop["n"], hop["quote"], hop["reverse"], hop["review"]) != (
+            chosen[0], number, quote, False, False
+        ):
+            bad += 1
+            print(f"  ✗ 筛选 {chosen}, review={review} 后逐跳证据错配：{hop}")
+        text = output.getvalue()
+        if quote not in text or "回顾原话" in text or "全靠回顾" in text or "(逆)" in text:
+            bad += 1
+            print(f"  ✗ CLI 解释未使用选中的证据：{text}")
+    print(f"路径证据随开关切换：{'通过' if not bad else '失败'}")
+    return bad
+
+
+def check_review_query_log() -> int:
+    from unittest.mock import patch
+
+    import cli
+    from querylog import read_queries
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "queries.jsonl"
+        graph = HERE / "data" / "eval_synth.json"
+        with patch.object(cli, "LOG", log), patch.object(
+            sys, "argv", ["cli.py", "a", "b", "--no-review", "--graph", str(graph)]
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            with patch.object(output, "reconfigure", create=True):
+                rc = cli.main()
+        rows = read_queries(log)
+    ok = rc == 0 and len(rows) == 1 and rows[0]["default"] is False
+    print(f"回顾型消融不计入共现：{'通过' if ok else '失败'}")
+    return int(not ok)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="两个算法的对照测试（默认只跑假图）")
     ap.add_argument("--real", action="store_true", help="额外跑 data/mem_graph.json（本机私人图，默认不碰）")
     a = ap.parse_args(argv)
-    bad = check_notes() + check_guards()
+    bad = check_notes() + check_guards() + check_selected_evidence() + check_review_query_log()
 
     fake = load(HERE / "data" / "fake_graph.json")
     pairs = list(itertools.permutations(list(fake.titles), 2))

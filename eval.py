@@ -85,22 +85,21 @@ def _weakest(p) -> str:
     return min(p.edges, key=lambda e: EDGE_KINDS[e[2]][1])[2]
 
 
-def _hops(g, p) -> list[dict]:
+def _hops(p) -> list[dict]:
     """逐跳记录关系类型、方向、原话和证据是否缺失——回溯要求靠这个判，不靠感觉。"""
     out = []
-    for a, b, kind in p.edges:
-        n, quote, ekind, (src, _dst), review = g.why_of(a, b)
+    for src, dst, edge in zip(p.nodes, p.nodes[1:], p.hop_edges):
         out.append(
             {
-                "from": a,
-                "to": b,
-                "kind": kind,
-                "evidence_kind": ekind,
-                "n": n,
-                "quote": quote,
-                "reverse": bool(kind == "link" and ekind == "link" and src == b),
-                "review": bool(review),
-                "evidence_missing": not (n or quote),
+                "from": src,
+                "to": dst,
+                "kind": edge.kind,
+                "evidence_kind": edge.kind,
+                "n": edge.n,
+                "quote": edge.quote,
+                "reverse": edge.kind == "link" and edge.src == dst,
+                "review": bool(edge.review),
+                "evidence_missing": not (edge.n or edge.quote),
             }
         )
     return out
@@ -140,7 +139,7 @@ def _path_row(g, desc: str, src_name: str, dst_name: str) -> dict:
                 "candidates": len(paths),
             }
             if vlabel == "默认":  # 逐跳只记默认视图；消融看跳数/连通性就够了
-                row["hops_detail"] = _hops(g, p)
+                row["hops_detail"] = _hops(p)
         else:
             row["variants"][vlabel] = {
                 "status": "断",
@@ -356,7 +355,10 @@ def diff(old: dict, new: dict) -> list[tuple[str, str, str, str, object, object]
                 if label not in new_rows:
                     out.append((gname, section, label, "消失", old_rows[label], ""))
                     continue
-                ov, nv = old_rows[label].get("variants", {}), new_rows[label].get("variants", {})
+                old_row, new_row = old_rows[label], new_rows[label]
+                if old_row.get("hops_detail") != new_row.get("hops_detail"):
+                    out.append((gname, section, label, "逐跳证据", old_row.get("hops_detail"), new_row.get("hops_detail")))
+                ov, nv = old_row.get("variants", {}), new_row.get("variants", {})
                 for variant in sorted(set(ov) | set(nv)):
                     a, b = ov.get(variant), nv.get(variant)
                     if a != b:

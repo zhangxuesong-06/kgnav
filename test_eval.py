@@ -176,6 +176,17 @@ def check_evidence_traceability() -> int:
     return bad
 
 
+def check_changed_path_quote() -> int:
+    snap = ev.collect(ev.load_cases([HERE / "eval.json"]))
+    changed = json.loads(ev.dumps(snap))
+    row = changed["graphs"]["eval_synth.json"]["paths"][0]
+    row["hops_detail"][0]["quote"] = "替换一条逐跳原话"
+    differences = ev.diff(snap, changed)
+    ok = any(d[1] == "paths" and d[2] == row["label"] for d in differences)
+    print(f"比较逐跳原话：{'通过' if ok else '失败'}")
+    return int(not ok)
+
+
 def main() -> int:
     bad = (
         check_cases()
@@ -185,6 +196,7 @@ def main() -> int:
         + check_about_identity()
         + check_same_count_wrong_member()
         + check_evidence_traceability()
+        + check_changed_path_quote()
     )
     print("全部通过" if not bad else f"**{bad} 处失败**")
     return 1 if bad else 0

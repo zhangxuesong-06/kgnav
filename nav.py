@@ -13,16 +13,20 @@ import heapq
 from collections import Counter
 from dataclasses import dataclass
 
-from graph import CN, EDGE_KINDS, Graph
+from graph import CN, EDGE_KINDS, Edge, Graph
 
 
 @dataclass
 class Path:
     nodes: list[str]
-    edges: list[tuple[str, str, str]]  # (from, to, relation)
+    hop_edges: list[Edge]
     cost: float
     confidence: float
     note: str
+
+    @property
+    def edges(self) -> list[tuple[str, str, str]]:
+        return [(src, dst, edge.kind) for src, dst, edge in zip(self.nodes, self.nodes[1:], self.hop_edges)]
 
 
 class Navigator:
@@ -74,30 +78,29 @@ class Navigator:
         return out
 
     # ---- 内部 ---------------------------------------------------------
-    def _adjacency(self, g: Graph) -> dict[str, list[tuple[str, str, float, float]]]:
-        adj: dict[str, list[tuple[str, str, float, float]]] = {n: [] for n in g.titles}
-        best: dict[tuple[str, str], tuple[float, float, str]] = {}
-        for e in g.edges:
-            if e.kind not in self.kinds:
+    def _adjacency(self, g: Graph) -> dict[str, list[tuple[str, Edge]]]:
+        adj: dict[str, list[tuple[str, Edge]]] = {n: [] for n in g.titles}
+        best: dict[tuple[str, str], Edge] = {}
+        for edge in g.edges:
+            if edge.kind not in self.kinds:
                 continue
-            if not self.review and e.review:
+            if not self.review and edge.review:
                 continue
-            cost, conf = EDGE_KINDS[e.kind]
-            key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
+            key = tuple(sorted((edge.src, edge.dst)))
             # 同一对节点之间只留最强的那条边：否则"同来源"和"显式链接"会各出一条路，
             # 看着是三条候选，其实是同一件事说了三遍。
-            if key not in best or conf > best[key][1]:
-                best[key] = (cost, conf, e.kind)
-        for (a, b), (cost, conf, kind) in best.items():
-            adj[a].append((b, kind, cost, conf))
-            adj[b].append((a, kind, cost, conf))  # 关系按无向走，方向照原样记录
+            if key not in best or EDGE_KINDS[edge.kind][1] > EDGE_KINDS[best[key].kind][1]:
+                best[key] = edge
+        for (src, dst), edge in best.items():
+            adj[src].append((dst, edge))
+            adj[dst].append((src, edge))
         return adj
 
     def _best(self, g, adj, src, dst, penalty) -> Path | None:
         if src not in adj or dst not in adj:
             return None
         dist = {src: 0.0}
-        prev: dict[str, tuple[str, str]] = {}
+        prev: dict[str, tuple[str, Edge]] = {}
         heap = [(0.0, src)]
         while heap:
             d, u = heapq.heappop(heap)
@@ -106,35 +109,34 @@ class Navigator:
             self.expansions += 1
             if u == dst:
                 break
-            for v, kind, cost, _conf in adj[u]:
-                nd = d + cost * penalty.get(_key(u, v, kind), 1.0)
+            for v, edge in adj[u]:
+                nd = d + EDGE_KINDS[edge.kind][0] * penalty.get(_key(u, v, edge.kind), 1.0)
                 if nd < dist.get(v, float("inf")) - 1e-12:
                     dist[v] = nd
-                    prev[v] = (u, kind)
+                    prev[v] = (u, edge)
                     heapq.heappush(heap, (nd, v))
         if dst not in dist:
             return None
 
         nodes = [dst]
-        kinds_seq: list[str] = []
+        hop_edges: list[Edge] = []
         cur = dst
         while cur != src:
-            p, kind = prev[cur]
-            kinds_seq.append(kind)
+            p, edge = prev[cur]
+            hop_edges.append(edge)
             nodes.append(p)
             cur = p
         nodes.reverse()
-        kinds_seq.reverse()
-        return self._finish(g, nodes, kinds_seq)
+        hop_edges.reverse()
+        return self._finish(g, nodes, hop_edges)
 
-    def _finish(self, g: Graph, nodes: list[str], kinds_seq: list[str]) -> Path:
-        edges = [(nodes[i], nodes[i + 1], kinds_seq[i]) for i in range(len(kinds_seq))]
+    def _finish(self, g: Graph, nodes: list[str], hop_edges: list[Edge]) -> Path:
         # 可信度取最弱一环，而不是各边相乘：跳数已经单独显示，再乘一遍等于罚长度；
         # 而且取 min 时，note 里那句"最弱一环"就是这条路的分数本身，可对账。
-        real_cost = sum(EDGE_KINDS[e[2]][0] for e in edges)
-        conf = min((EDGE_KINDS[e[2]][1] for e in edges), default=1.0)
+        real_cost = sum(EDGE_KINDS[edge.kind][0] for edge in hop_edges)
+        conf = min((EDGE_KINDS[edge.kind][1] for edge in hop_edges), default=1.0)
 
-        p = Path(nodes, edges, round(real_cost, 2), round(conf, 2), "")
+        p = Path(nodes, hop_edges, round(real_cost, 2), round(conf, 2), "")
         p.note = _note(g, p)
         return p
 
@@ -153,8 +155,8 @@ class Bidirectional(Navigator):
             return None
         inf = float("inf")
         df, db = {src: 0.0}, {dst: 0.0}
-        pf: dict[str, tuple[str, str]] = {}  # 前向：指向 src 一侧
-        pb: dict[str, tuple[str, str]] = {}  # 后向：指向 dst 一侧
+        pf: dict[str, tuple[str, Edge]] = {}  # 前向：指向 src 一侧
+        pb: dict[str, tuple[str, Edge]] = {}  # 后向：指向 dst 一侧
         hf, hb = [(0.0, src)], [(0.0, dst)]
         done_f, done_b = set(), set()
         best, meet = inf, None
@@ -168,11 +170,11 @@ class Bidirectional(Navigator):
                 self.expansions += 1
                 if u in db and d + db[u] < best:
                     best, meet = d + db[u], u
-                for v, kind, cost, _c in adj[u]:
-                    nd = d + cost * penalty.get(_key(u, v, kind), 1.0)
+                for v, edge in adj[u]:
+                    nd = d + EDGE_KINDS[edge.kind][0] * penalty.get(_key(u, v, edge.kind), 1.0)
                     if nd < df.get(v, inf) - 1e-12:
                         df[v] = nd
-                        pf[v] = (u, kind)
+                        pf[v] = (u, edge)
                         heapq.heappush(hf, (nd, v))
             else:
                 d, u = heapq.heappop(hb)
@@ -182,32 +184,32 @@ class Bidirectional(Navigator):
                 self.expansions += 1
                 if u in df and d + df[u] < best:
                     best, meet = d + df[u], u
-                for v, kind, cost, _c in adj[u]:
-                    nd = d + cost * penalty.get(_key(u, v, kind), 1.0)
+                for v, edge in adj[u]:
+                    nd = d + EDGE_KINDS[edge.kind][0] * penalty.get(_key(u, v, edge.kind), 1.0)
                     if nd < db.get(v, inf) - 1e-12:
                         db[v] = nd
-                        pb[v] = (u, kind)
+                        pb[v] = (u, edge)
                         heapq.heappush(hb, (nd, v))
 
         if meet is None:
             return None
 
-        nodes, kinds_seq = [meet], []
+        nodes, hop_edges = [meet], []
         cur = meet
         while cur != src:  # 往 src 走
-            p, kind = pf[cur]
-            kinds_seq.append(kind)
+            p, edge = pf[cur]
+            hop_edges.append(edge)
             nodes.append(p)
             cur = p
         nodes.reverse()
-        kinds_seq.reverse()
+        hop_edges.reverse()
         cur = meet
         while cur != dst:  # 往 dst 走
-            nxt, kind = pb[cur]
-            kinds_seq.append(kind)
+            nxt, edge = pb[cur]
+            hop_edges.append(edge)
             nodes.append(nxt)
             cur = nxt
-        return self._finish(g, nodes, kinds_seq)
+        return self._finish(g, nodes, hop_edges)
 
 
 @dataclass(frozen=True)
@@ -372,16 +374,16 @@ def _bfs(adj: dict[str, list], start: str) -> set[str]:
 
 
 def _note(g: Graph, p: Path) -> str:
-    if not p.edges:
+    if not p.hop_edges:
         return f"《{g.title(p.nodes[0])}》就是它自己。"
-    counts = Counter(e[2] for e in p.edges)
+    counts = Counter(edge.kind for edge in p.hop_edges)
     kinds = "、".join(f"{CN[k]}×{c}" for k, c in counts.items())
-    weakest = min(p.edges, key=lambda e: EDGE_KINDS[e[2]][1])
-    wk, wc = CN[weakest[2]], EDGE_KINDS[weakest[2]][1]
-    ev = list(dict.fromkeys(f"#{g.why_of(a, b)[0]}" for a, b, _k in p.edges if g.why_of(a, b)[0]))
+    weakest = min(counts, key=lambda kind: EDGE_KINDS[kind][1])
+    wk, wc = CN[weakest], EDGE_KINDS[weakest][1]
+    ev = list(dict.fromkeys(f"#{edge.n}" for edge in p.hop_edges if edge.n))
     if ev:
         tail = f"；证据 {'、'.join(ev)}。"
-    elif any(k == "cooccur" for _a, _b, k in p.edges):
+    elif "cooccur" in counts:
         tail = "；证据是查询记录本身。"
     else:
         tail = "。"
@@ -392,9 +394,8 @@ def _note(g: Graph, p: Path) -> str:
     for n in attributed[1:]:
         common &= g.turns[n]
     missing = len(p.nodes) - len(attributed)
-    rev = sum(1 for a, b, k in p.edges if k == "link" and g.why_of(a, b)[4])  # 只有 link 才可能回顾
     span = ""
-    if rev == len(p.edges):  # 全靠回顾型：比轮次更值得先说
+    if all(edge.kind == "link" and edge.review for edge in p.hop_edges):
         span = "；全靠回顾型引用撑着（后来的记录在讨论它们），不是原任务里的关系"
     elif len(attributed) >= 2 and not common:
         span = "；至少跨两个轮次"  # 有两个节点各自归属不同轮次，这是硬证据

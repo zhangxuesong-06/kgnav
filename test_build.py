@@ -85,6 +85,31 @@ def test_session_skips_bad_keys() -> int:
     return bad
 
 
+def test_turn_requires_session_and_id() -> int:
+    recs = [
+        episode(1, "session", None, None, "缺轮次标识的摘录"),
+        message(2, "session", None, "未归属的对话"),
+        episode(3, None, "turn", None, "缺会话标识的摘录"),
+        message(4, None, "turn", "另一条未归属的对话"),
+    ]
+    graph, stats = build(recs, use_window=False)
+    ok = not edges_of(graph, "source") and stats["exact"] == 0
+    print(f"缺会话或轮次标识不建立归属：{'通过' if ok else '失败'}")
+    return int(not ok)
+
+
+def test_link_direction_matches_evidence() -> int:
+    recs = [
+        message(1, "session", "turn", "原话提及 #2"),
+        episode(2, "session", "turn", 1, "来源 #1：当时的任务"),
+    ]
+    graph, _ = build(recs, use_window=False)
+    edge = edges_of(graph, "link")[0]
+    ok = edge["from"] == f"r{edge['n']}"
+    print(f"导出引用方向与证据一致：{'通过' if ok else '失败'}")
+    return int(not ok)
+
+
 def test_cooccur() -> int:
     bad = 0
     recs = [
@@ -234,6 +259,10 @@ def test_method_hub() -> int:
     if not all("幂等" in e.get("quote", "") for e in me):
         bad += 1
         print(f"  ✗ 证据里没写方法名：{[e.get('quote') for e in me]}")
+    originals = {rec["n"]: rec["text"] for rec in recs}
+    if not all(e["n"] in originals and originals[e["n"]] in e["quote"] for e in me):
+        bad += 1
+        print(f"  ✗ 方法边缺少可回查的记录号或原话：{me}")
     if stats["method_hubs"] != 1:
         bad += 1
         print(f"  ✗ 统计不对：{stats['method_hubs']}")
@@ -420,6 +449,18 @@ def test_log_roundtrip() -> int:
         if read_queries(p) != []:
             bad += 1
             print("  ✗ 类型不对的行被收进来了")
+        malformed = {**q("r1", "r2", 100), "ts": "写坏的时间戳"}
+        p.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+        recs = [message(1, "s1", "t1", "甲"), message(2, "s2", "t2", "乙")]
+        try:
+            graph, _ = build(recs, queries=read_queries(p), graph_tag="g.json")
+        except (ValueError, TypeError):
+            bad += 1
+            print("  ✗ 坏时间戳让导出失败")
+        else:
+            if edges_of(graph, "cooccur"):
+                bad += 1
+                print("  ✗ 坏时间戳被计入共现")
     print(f"日志读写：{'通过' if not bad else '失败'}")
     return bad
 
@@ -429,6 +470,8 @@ def main() -> int:
     for fn in (
         test_session_chain,
         test_session_skips_bad_keys,
+        test_turn_requires_session_and_id,
+        test_link_direction_matches_evidence,
         test_cooccur,
         test_cooccur_skips_strongly_linked,
         test_cooccur_allowed_when_link_is_review,

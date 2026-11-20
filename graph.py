@@ -51,7 +51,6 @@ class Graph:
     titles: dict[str, str]
     edges: list[Edge]
     texts: dict[str, str] = field(default_factory=dict)  # 检索用全文，显示仍用 title
-    why: dict[tuple[str, str], tuple[int | None, str, str, tuple[str, str], bool]] = field(default_factory=dict)
     turns: dict[str, set[str]] = field(default_factory=dict)  # 节点属于哪几轮
     meta: dict = field(default_factory=dict)  # 图 JSON 顶层的其他字段（如 methods_skipped）
 
@@ -60,9 +59,6 @@ class Graph:
 
     def has(self, node: str) -> bool:
         return node in self.titles
-
-    def why_of(self, a: str, b: str) -> tuple[int | None, str, str, tuple[str, str], bool]:
-        return self.why.get((a, b) if a <= b else (b, a), (None, "", "", ("", ""), False))
 
     def resolve(self, name: str) -> tuple[str | None, list[str]]:
         """精确 id → #记录号 → 精确标题 → 唯一子串 → 二字组近似。命中多个就原样返回，不猜。"""
@@ -126,12 +122,12 @@ def load(path: str | Path) -> Graph:
     ]
     edges += _derived_edges(raw["nodes"])
 
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, bool]] = set()
     unique: list[Edge] = []
     for e in edges:
         if e.src == e.dst:
             continue
-        key = (e.src, e.dst, e.kind)
+        key = (e.src, e.dst, e.kind, e.review)
         if key in seen:
             continue
         seen.add(key)
@@ -142,9 +138,4 @@ def load(path: str | Path) -> Graph:
     g.meta = {k: v for k, v in raw.items() if k not in ("nodes", "links")}
     if not isinstance(g.meta.get("methods_skipped"), dict):  # 手改过的图不该让 CLI 崩
         g.meta["methods_skipped"] = {}
-    for e in unique:  # 同一对节点只留最有把握那条边的证据，和路线选择的口径一致
-        key = (e.src, e.dst) if e.src <= e.dst else (e.dst, e.src)
-        old = g.why.get(key)
-        if old is None or EDGE_KINDS[e.kind][1] > EDGE_KINDS[old[2]][1]:
-            g.why[key] = (e.n, e.quote, e.kind, (e.src, e.dst), e.review)
     return g

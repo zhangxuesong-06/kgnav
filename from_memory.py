@@ -136,6 +136,13 @@ def _window_ep(starts: list[tuple[int, str, int]] | None, n: int) -> tuple[str, 
     return starts[i] if i >= 0 else None
 
 
+def _turn_key(rec: dict) -> tuple[str, str] | None:
+    session, turn = rec.get("sid"), rec.get("turnID")
+    if isinstance(session, str) and session and isinstance(turn, str) and turn:
+        return session, turn
+    return None
+
+
 def _snippet(text: str, start: int, end: int, pad: int = 40) -> str:
     a = max(0, start - pad)
     b = min(len(text), end + pad)
@@ -208,8 +215,8 @@ def _alias_pattern(term: str) -> re.Pattern[str]:
     """
     body = re.escape(term)
     if _ASCII_ONLY.match(term):
-        return re.compile(r"(?<![A-Za-z0-9_])" + body + r"(?![A-Za-z0-9_])")
-    return re.compile(body)
+        return re.compile(r"(?<![A-Za-z0-9_])" + body + r"(?![A-Za-z0-9_])", re.IGNORECASE | re.ASCII)
+    return re.compile(body, re.IGNORECASE)
 
 
 def build(
@@ -242,12 +249,11 @@ def build(
         if r["n"] in rec2node:
             continue
         key = _sha1(norm(r.get("text")))
-        if r.get("kind") == "episode" and r.get("turnID"):
-            turn = (r.get("sid"), r.get("turnID"))
-            if turn in ep_by_turn:
-                rec2node[r["n"]] = ep_by_turn[turn]
-                nodes[ep_by_turn[turn]]["count"] += 1
-                continue
+        turn = _turn_key(r) if r.get("kind") == "episode" else None
+        if turn is not None and turn in ep_by_turn:
+            rec2node[r["n"]] = ep_by_turn[turn]
+            nodes[ep_by_turn[turn]]["count"] += 1
+            continue
         if key in content2node:
             rec2node[r["n"]] = content2node[key]
             nodes[content2node[key]]["count"] += 1
@@ -255,8 +261,8 @@ def build(
         nid = f"r{r['n']}"
         content2node[key] = nid
         rec2node[r["n"]] = nid
-        if r.get("kind") == "episode" and r.get("turnID"):
-            ep_by_turn[(r.get("sid"), r.get("turnID"))] = nid
+        if turn is not None:
+            ep_by_turn[turn] = nid
         nodes[nid] = {
             "id": nid,
             "title": title_of(r),
@@ -283,7 +289,7 @@ def build(
         old = seen.get(key)
         if old is not None:
             if review is False:  # 同一对边只要有一条不是回顾型的，就不该被标成回顾型
-                old["review"], old["n"], old["quote"] = False, n, quote
+                old.update({"from": a, "to": b, "review": False, "n": n, "quote": quote})
             return False
         edge = {"from": a, "to": b, "kind": kind, "n": n, "quote": quote, "review": review}
         seen[key] = edge
@@ -328,30 +334,34 @@ def build(
     # 4) 同一轮的任务摘录当"来源"枢纽。
     #    turnID 对不上时退一步：episode 自己记了 requestSeq（那一轮从哪条记录开始），
     #    同一 sid 里取"起点早于它、且最晚的那条 episode"。这是照抄记录里的边界，不是猜。
-    turn2ep: dict[tuple, tuple[str, int, int | None]] = {}
-    win: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+    turn2ep: dict[tuple[str, str], tuple[str, int]] = {}
+    by_sid: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
     for r in recs:
-        if r.get("kind") == "episode":
-            ep = (rec2node[r["n"]], r["n"], None)
-            turn2ep[(r.get("sid"), r.get("turnID"))] = ep
-            if r.get("requestSeq"):
-                win[r.get("sid")].append((r["requestSeq"], ep[0], ep[1]))
-    for starts in win.values():
+        if r.get("kind") != "episode":
+            continue
+        nid = rec2node[r["n"]]
+        turn = _turn_key(r)
+        if turn is not None:
+            turn2ep[turn] = nid, r["n"]
+        sid, seq = r.get("sid"), r.get("requestSeq")
+        if isinstance(sid, str) and sid and type(seq) is int and seq > 0:
+            by_sid[sid].append((seq, nid, r["n"]))
+    for starts in by_sid.values():
         starts.sort()
 
     exact = window = miss = 0
     node_turns: dict[str, set[str]] = defaultdict(set)
     for r in recs:
-        hit = turn2ep.get((r.get("sid"), r.get("turnID")))
+        hit = turn2ep.get(_turn_key(r))
         why = "同一轮：turnID 对得上"
         if hit is not None:
             exact += 1
-        elif use_window:
-            found = _window_ep(win.get(r.get("sid")), r["n"])
-            window += 1 if found else 0
+        elif use_window and isinstance(r.get("sid"), str):
+            found = _window_ep(by_sid.get(r["sid"]), r["n"])
             if found:
                 seq, node, ep_n = found
-                hit, why = (node, ep_n, seq), f"同一轮：按它记的 requestSeq={seq} 归过来"
+                window += 1
+                hit, why = (node, ep_n), f"同一轮：按它记的 requestSeq={seq} 归过来"
         if hit is None:
             miss += 1
             continue
@@ -400,17 +410,23 @@ def build(
     method_skipped: dict[str, str] = {}  # 方法名 → 为什么没建枢纽（静默跳过等于骗人）
     if methods:
         for name, terms in methods.items():
-            keys = [t.strip().lower() for t in terms if isinstance(t, str) and t.strip()]
+            keys = [t.strip() for t in terms if isinstance(t, str) and t.strip()]
             if not keys:
                 method_skipped[str(name)] = "没有可用别名"
                 continue
-            pats = [(t, _alias_pattern(t)) for t in keys]
-            member: dict[str, str] = {}
+            pats = [_alias_pattern(term) for term in keys]
+            member: dict[str, tuple[int, str]] = {}
             for r in recs:
-                txt = (r.get("text") or "").lower()
-                hit = next((t for t, p in pats if p.search(txt)), None)
-                if hit:
-                    member.setdefault(rec2node[r["n"]], hit)
+                nid = rec2node[r["n"]]
+                if nid in member:
+                    continue
+                text = r.get("text") or ""
+                for pattern in pats:
+                    match = pattern.search(text)
+                    if match:
+                        snippet = _snippet(text, match.start(), match.end())
+                        member[nid] = r["n"], f"提到「{match[0]}」（方法：{name}） 原话：{snippet}"
+                        break
             if not member:
                 method_skipped[str(name)] = "没有记录提到"
                 continue
@@ -429,26 +445,15 @@ def build(
                 "count": 1,
             }
             method_hubs += 1
-            for nid, hit in member.items():
-                if add(nid, hub, "method", None, f"提到「{hit}」（方法：{name}）"):
+            for nid, (number, quote) in member.items():
+                if add(nid, hub, "method", number, quote):
                     method_edges += 1
 
     # 5) 同会话链：同一 sid 里相邻的两轮连一条。sid 和 requestSeq 都是记录里本来就有的，
     #    这不是推断，是把"同一次会话里先后聊过"这件事显式化。比"同一轮"弱，所以单独一类。
     #    没有 sid 或不带有效 requestSeq 的轮次不参与——顺序不可靠就不猜，宁可少一条边。
-    by_sid: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
-    for r in recs:
-        if r.get("kind") != "episode":
-            continue
-        sid, seq = r.get("sid"), r.get("requestSeq")
-        if not isinstance(sid, str) or not sid:
-            continue
-        if not isinstance(seq, int) or seq <= 0:
-            continue
-        by_sid[sid].append((seq, rec2node[r["n"]], r["n"]))
     session_edges = 0
     for sid, lst in by_sid.items():
-        lst.sort()
         prev: tuple[int, str] | None = None
         for seq, node, n in lst:
             if prev and prev[0] < seq:  # 序号相同 = 同一轮的两份摘要，不连
@@ -468,15 +473,19 @@ def build(
         for q in queries:
             if graph_tag and q.get("graph") != graph_tag:
                 continue
-            if not q.get("default", False):  # 消融/对照跑出来的查询不算注意力
+            if q.get("default") is not True:  # 消融/对照跑出来的查询不算注意力
                 continue
             a, b = q.get("src"), q.get("dst")
             if not isinstance(a, str) or not isinstance(b, str) or a == b:
                 continue
             if a not in nodes or b not in nodes:
                 continue
+            try:
+                ts = int(q.get("ts"))
+            except (TypeError, ValueError, OverflowError):
+                continue
             key = (a, b) if a <= b else (b, a)
-            days[key].add(int(q.get("ts") or 0) // 86400)
+            days[key].add(ts // 86400)
             times[key] += 1
             if not q.get("found"):
                 missed[key] += 1
