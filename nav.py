@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from graph import CN, EDGE_KINDS, Edge, Graph
+from querylog import QueryRef
 
 
 @dataclass
@@ -221,6 +222,7 @@ class Neighbor:
     confidence: float
     n: int | None = None
     review: bool = False
+    query_refs: tuple[QueryRef, ...] = ()
 
 
 GROUPS = ("概念", "引用", "同源", "共现", "近邻")
@@ -271,6 +273,7 @@ def neighbors(
                 EDGE_KINDS[e.kind][1],
                 e.n,
                 e.review,
+                e.query_refs,
             )
         )
     for name in out:
@@ -383,8 +386,6 @@ def _note(g: Graph, p: Path) -> str:
     ev = list(dict.fromkeys(f"#{edge.n}" for edge in p.hop_edges if edge.n))
     if ev:
         tail = f"；证据 {'、'.join(ev)}。"
-    elif "cooccur" in counts:
-        tail = "；证据是查询记录本身。"
     else:
         tail = "。"
     # 这条路径能不能整条落进同一个轮次里。只能拿有归属的节点判，

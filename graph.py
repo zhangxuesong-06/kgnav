@@ -13,6 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from querylog import QueryRef
+
 # 边类型 -> (cost, confidence)。
 # 弱边不靠后天调参压制，靠这两列先天就贵、先天就不信。
 EDGE_KINDS: dict[str, tuple[float, float]] = {
@@ -44,6 +46,7 @@ class Edge:
     n: int | None = None  # 证据来自哪条记录
     quote: str = ""  # 那句原话 / 那条归属说明
     review: bool = False  # 回顾型：后来的记录在正文里提到更早的记录
+    query_refs: tuple[QueryRef, ...] = ()
 
 
 @dataclass
@@ -117,7 +120,10 @@ def load(path: str | Path) -> Graph:
     titles = {n["id"]: n["title"] for n in raw["nodes"]}
     texts = {n["id"]: n.get("text") or n["title"] for n in raw["nodes"]}
     edges = [
-        Edge(e["from"], e["to"], e["kind"], e.get("n"), e.get("quote") or "", e.get("review", False))
+        Edge(
+            e["from"], e["to"], e["kind"], e.get("n"), e.get("quote") or "",
+            e.get("review", False), tuple(tuple(ref) for ref in (e.get("query_refs") or ())),
+        )
         for e in raw.get("links", [])
     ]
     edges += _derived_edges(raw["nodes"])

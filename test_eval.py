@@ -169,9 +169,14 @@ def check_evidence_traceability() -> int:
         bad += 1
         print("  ✗ 假图的逐跳记录没标证据缺失")
     synth = snap["graphs"]["eval_synth.json"]
-    if synth["summary"]["hops_without_evidence"] or synth["summary"]["neighbors_without_evidence"]:
+    synth_hops = [h for row in synth["paths"] for h in row.get("hops_detail", [])]
+    if (
+        synth["summary"]["hops_without_evidence"] != 1
+        or synth["summary"]["neighbors_without_evidence"] != 1
+        or any(h["evidence_missing"] != (h["kind"] == "cooccur") for h in synth_hops)
+    ):
         bad += 1
-        print(f"  ✗ 合成图不该有证据缺口：{synth['summary']}")
+        print("  ✗ 合成图的旧共现只有汇总，应标为缺原始查询引用")
     print(f"证据回溯：{'通过' if not bad else '失败'}")
     return bad
 

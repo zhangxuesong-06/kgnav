@@ -27,10 +27,10 @@ import json
 import os
 import re
 from bisect import bisect_right
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-from querylog import read_queries
+from querylog import QueryRef, read_queries
 
 HERE = Path(__file__).parent
 DEFAULT_OUT = HERE / "data" / "mem_graph.json"
@@ -281,7 +281,8 @@ def build(
     STRUCT_LABELS = {"产物", "助手摘录", "来源", "请求"}
 
     def add(
-        a: str, b: str, kind: str, n: int | None = None, quote: str = "", review: bool = False
+        a: str, b: str, kind: str, n: int | None = None, quote: str = "", review: bool = False,
+        *, query_refs: list[QueryRef] | None = None,
     ) -> bool:
         if a == b:
             return False
@@ -292,6 +293,8 @@ def build(
                 old.update({"from": a, "to": b, "review": False, "n": n, "quote": quote})
             return False
         edge = {"from": a, "to": b, "kind": kind, "n": n, "quote": quote, "review": review}
+        if query_refs:
+            edge["query_refs"] = query_refs
         seen[key] = edge
         edges.append(edge)
         return True
@@ -467,6 +470,7 @@ def build(
     #    只认同一张图、默认开关下的查询；证据写清问过几次、跨几天。
     cooccur_edges = 0
     if queries:
+        query_refs: dict[tuple[str, str], deque[QueryRef]] = defaultdict(lambda: deque(maxlen=3))
         days: dict[tuple[str, str], set[int]] = defaultdict(set)
         times: Counter[tuple[str, str]] = Counter()
         missed: Counter[tuple[str, str]] = Counter()
@@ -487,6 +491,9 @@ def build(
             key = (a, b) if a <= b else (b, a)
             days[key].add(ts // 86400)
             times[key] += 1
+            ref = q.get("_query_ref")
+            if ref is not None:
+                query_refs[key].append(ref)
             if not q.get("found"):
                 missed[key] += 1
         linked = {
@@ -500,7 +507,7 @@ def build(
             d = len(days[(a, b)])
             head = f"你在 {d} 天里问过 {n} 次" if d > 1 else f"你问过 {n} 次"
             tail = f"，其中 {missed[(a, b)]} 次没找到路" if missed[(a, b)] else ""
-            if add(a, b, "cooccur", None, head + tail):
+            if add(a, b, "cooccur", quote=head + tail, query_refs=list(query_refs.get((a, b), ()))):
                 cooccur_edges += 1
 
     graph = {

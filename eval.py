@@ -89,19 +89,21 @@ def _hops(p) -> list[dict]:
     """逐跳记录关系类型、方向、原话和证据是否缺失——回溯要求靠这个判，不靠感觉。"""
     out = []
     for src, dst, edge in zip(p.nodes, p.nodes[1:], p.hop_edges):
-        out.append(
-            {
-                "from": src,
-                "to": dst,
-                "kind": edge.kind,
-                "evidence_kind": edge.kind,
-                "n": edge.n,
-                "quote": edge.quote,
-                "reverse": edge.kind == "link" and edge.src == dst,
-                "review": bool(edge.review),
-                "evidence_missing": not (edge.n or edge.quote),
-            }
-        )
+        hop = {
+            "from": src,
+            "to": dst,
+            "kind": edge.kind,
+            "evidence_kind": edge.kind,
+            "n": edge.n,
+            "quote": edge.quote,
+            "reverse": edge.kind == "link" and edge.src == dst,
+            "review": bool(edge.review),
+            "evidence_missing": not (edge.n or edge.quote),
+        }
+        if edge.kind == "cooccur":
+            hop["query_refs"] = list(edge.query_refs)
+            hop["evidence_missing"] = not edge.query_refs
+        out.append(hop)
     return out
 
 
@@ -170,6 +172,7 @@ def _about_row(g, desc: str, seed: str) -> dict:
                     "evidence": x.evidence,
                     "n": x.n,
                     "review": x.review,
+                    **({"query_refs": list(x.query_refs)} if x.kind == "cooccur" else {}),
                 }
                 for x in nb[group]
             ]
@@ -194,7 +197,9 @@ def _summary(rows: list[dict], about: list[dict]) -> dict:
         "neighbors": sum(len(m) for v in about_default for m in v.values()),
         # 旧边没有留下原话时，回溯要求就没满足；数字单列，不和"有证据"混在一起
         "neighbors_without_evidence": sum(
-            1 for v in about_default for m in v.values() for x in m if not (x["n"] or x["evidence"])
+            1
+            for view in about_default for members in view.values() for member in members
+            if not member.get("query_refs", member["n"] or member["evidence"])
         ),
         "hops_without_evidence": sum(
             1 for r in rows for h in r.get("hops_detail", []) if h["evidence_missing"]

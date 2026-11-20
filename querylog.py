@@ -10,6 +10,8 @@ import json
 import time
 from pathlib import Path
 
+QueryRef = tuple[str, int]
+
 
 def log_query(
     path: Path | None,
@@ -44,7 +46,7 @@ def read_queries(path: Path) -> list[dict]:
     out: list[dict] = []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
+            for line_number, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
@@ -56,6 +58,7 @@ def read_queries(path: Path) -> list[dict]:
                     continue
                 if not isinstance(row.get("src"), str) or not isinstance(row.get("dst"), str):
                     continue  # 类型不对的一律不收，免得后面 unhashable
+                row["_query_ref"] = (path.name, line_number)
                 out.append(row)
     except OSError:
         return []

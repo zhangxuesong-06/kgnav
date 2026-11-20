@@ -12,7 +12,7 @@ from pathlib import Path
 
 from graph import CN, EDGE_KINDS, Edge, Graph, graph_file, load
 from nav import Bidirectional, GROUPS, Navigator, concept_members, cut_kinds, dead_end, neighbors
-from querylog import log_query
+from querylog import QueryRef, log_query
 
 HERE = Path(__file__).parent
 LOG = HERE / "data" / "queries.jsonl"
@@ -61,6 +61,8 @@ def _chain(g: Graph, p, why: bool = False) -> str:
 
 
 def _ev(edge: Edge, dst: str) -> str:
+    if edge.kind == "cooccur":
+        return _query_evidence(edge.quote, edge.query_refs)
     back = " ←反向" if edge.kind == "link" and edge.src == dst else ""
     if edge.n:
         quote = f"「{edge.quote}」" if edge.quote else ""
@@ -68,6 +70,13 @@ def _ev(edge: Edge, dst: str) -> str:
     if edge.quote:
         return f"{back}「{edge.quote}」"
     return "—（这条边没有留下证据）"
+
+
+def _query_evidence(summary: str, refs: tuple[QueryRef, ...]) -> str:
+    summary = f"查询汇总：{summary}。" if summary else ""
+    if refs:
+        return summary + "日志行：" + "、".join(f"{name}:{line}" for name, line in refs)
+    return summary + "缺少原始查询行引用"
 
 
 def _header(
@@ -162,6 +171,8 @@ def _render_about(g: Graph, nb: dict, limit: int = 8, seed: str | None = None) -
             ev = f"#{x.n}「{x.evidence}」" if x.n and x.evidence else (
                 f"#{x.n}" if x.n else (f"「{x.evidence}」" if x.evidence else "")
             )
+            if x.kind == "cooccur":
+                ev = _query_evidence(x.evidence, x.query_refs)
             mark = "（回顾型）" if x.review else ""
             tail = f"  {ev}" if ev else ""
             lines.append(f"  · 《{g.title(x.node)}》  [{tag}]{mark}{tail}")

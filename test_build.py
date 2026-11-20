@@ -158,6 +158,55 @@ def test_cooccur_skips_strongly_linked() -> int:
     return bad
 
 
+def test_cooccur_query_evidence() -> int:
+    import contextlib
+    import io
+
+    from cli import _render_about, run
+    from eval import _about_row, _hops
+    from graph import load
+    from nav import neighbors
+    from querylog import log_query, read_queries
+
+    recs = [message(1, "s1", "t1", "甲"), message(2, "s2", "t2", "乙")]
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "合成查询.jsonl"
+        log.write_text("{坏行\n\n", encoding="utf-8")
+        log_query(log, "g.json", "r1", "r2", [])
+        log_query(log, "g.json", "r2", "r1", [], default=False)
+        log_query(log, "other.json", "r1", "r2", [])
+        log_query(log, "g.json", "r2", "r1", [])
+        log_query(log, "g.json", "r1", "r2", [])
+        log_query(log, "g.json", "r2", "r1", [])
+        persisted = log.read_text(encoding="utf-8").splitlines()
+        graph_json, _ = build(recs, queries=read_queries(log), graph_tag="g.json")
+        edge = edges_of(graph_json, "cooccur")[0]
+        refs = edge.get("query_refs", ())
+        if refs != [(log.name, 6), (log.name, 7), (log.name, 8)] or "问过 4 次" not in edge["quote"]:
+            print(f"  ✗ 共现边未指向实际贡献的日志行：{refs}")
+            return 1
+        if [json.loads(persisted[line - 1])["src"] for _, line in refs] != ["r2", "r1", "r2"]:
+            print("  ✗ 日志引用未保留实际查询方向")
+            return 1
+        graph_path = Path(tmp) / "g.json"
+        graph_path.write_text(json.dumps(graph_json), encoding="utf-8")
+        graph = load(graph_path)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            hop = _hops(run(graph, "r1", "r2", ("cooccur",), 1, why=True)[0])[0]
+        about = _about_row(graph, "甲", "r1")["variants"]["默认"]["共现"][0]
+        neighborhood = "\n".join(_render_about(graph, neighbors(graph, "r1")))
+        locator = f"{log.name}:6"
+        ok = (
+            locator in output.getvalue()
+            and locator in neighborhood
+            and str(log.parent) not in graph_path.read_text(encoding="utf-8")
+            and hop["query_refs"] == about["query_refs"] == refs
+            and not hop["evidence_missing"]
+        )
+    print(f"共现可回查原始查询行：{'通过' if ok else '失败'}")
+    return int(not ok)
+
+
 def test_cooccur_allowed_when_link_is_review() -> int:
     bad = 0
     # r2 提到更早的 #1 → 这条 link 是回顾型，--no-review 时会被关掉，共现应该还能兜底
@@ -474,6 +523,7 @@ def main() -> int:
         test_link_direction_matches_evidence,
         test_cooccur,
         test_cooccur_skips_strongly_linked,
+        test_cooccur_query_evidence,
         test_cooccur_allowed_when_link_is_review,
         test_tags_end_to_end,
         test_tags_unknown_and_oversized,
